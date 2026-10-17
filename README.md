@@ -84,3 +84,11 @@ Manual device checks remain: camera refusal/permanent denial and missing camera 
 Environment used: Flutter 3.47.3 stable, Dart 3.13.3. Production signing and a physical-device smoke test are deployment tasks.
 
 Final results (2026-10-17): `flutter analyze` reports no issues; all 11 Flutter tests pass. Backend: all 36 tests pass (423 assertions); PHP syntax and OpenAPI contract checks pass. `flutter build apk --debug` was attempted but did not reach compilation: the Gradle 9.3.1 distribution download remained incomplete and a duplicate attempt timed out waiting 120 seconds for its download lock. The stalled attempts were stopped; no APK is claimed. Retry the documented build on a working toolchain/network. `adb devices` returned no attached devices, so no hardware smoke test was performed. The isolated `panjmap-postgres-1` development test container was started for verification and remains running.
+
+## Проверка адреса
+
+После получения координат входа приложение запрашивает локальные подсказки `GET /geography/suggestions` для назначенного участка. Подтвердите махаллю и улицу: примите предложенное название, найдите другое в справочнике, введите исправленное название или выберите «Неизвестно». При неоднозначном результате показывается предупреждение. Ошибка подсказок допускает ручной ввод и неизвестные значения.
+
+Новые координаты сбрасывают подтверждения адреса. Выбор сохраняется в восстанавливаемом черновике вместе с участком и включается в неизменяемый запрос объекта при отправке. Повторная отправка и ранее частично отправленные черновики продолжают использовать исходный payload. Исправления относятся только к собранному объекту и не переименовывают справочник.
+
+Для работы нужны новые backend-маршруты `/api/v1/geography`, миграция географических таблиц и обновлённые runtime grants. Сначала разверните backend и ресурсы администратора, затем обновите приложение. `test/geography_test.dart` проверяет состояния выбора, восстановление, обновление GPS, устаревшие ответы и работу при ошибках подсказок.

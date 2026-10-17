@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
@@ -24,6 +25,120 @@ class CaptureController extends ChangeNotifier {
   String name = '', status = '';
   bool busy = false, authenticated = false;
   double progress = 0;
+  int _lookupGeneration = 0;
+  Map<String, dynamic>? suggestions;
+  String? suggestionError;
+
+  Future<void> changeArea(String? value) async {
+    if (frozen || area == value) return;
+    area = value;
+    _lookupGeneration++;
+    suggestions = null;
+    if (draft != null) await save({...draft!, 'addressChoices': null});
+    await suggest();
+  }
+
+  Future<void> suggest() async {
+    if (frozen || area == null || draft?['fix'] == null) return;
+    final generation = ++_lookupGeneration;
+    final fix = Map<String, dynamic>.from(draft!['fix'] as Map);
+    final lookupArea = area;
+    suggestions = null;
+    suggestionError = null;
+    notifyListeners();
+    try {
+      final query = Uri(
+        queryParameters: {
+          'collection_area_id': lookupArea!,
+          'latitude': '${fix['latitude']}',
+          'longitude': '${fix['longitude']}',
+          'accuracy_m': '${fix['accuracy_m']}',
+        },
+      ).query;
+      final result = await api.get('geography/suggestions?$query');
+      if (generation != _lookupGeneration || frozen || area != lookupArea) {
+        return;
+      }
+      suggestions = Map<String, dynamic>.from(result as Map);
+    } catch (_) {
+      if (generation != _lookupGeneration || frozen) return;
+      suggestionError =
+          'Подсказки недоступны. Выберите вручную или укажите «Неизвестно».';
+    }
+    notifyListeners();
+  }
+
+  Future<List<Map<String, dynamic>>> searchAddress(
+    String kind,
+    String query,
+  ) async {
+    if (area == null) return [];
+    final params = Uri(
+      queryParameters: {'collection_area_id': area!, 'q': query},
+    ).query;
+    return (await api.get('geography/$kind?$params') as List)
+        .map((r) => Map<String, dynamic>.from(r as Map))
+        .toList();
+  }
+
+  Future<void> chooseAddress(
+    String key,
+    String status, {
+    Map<String, dynamic>? reference,
+    String? name,
+  }) async {
+    if (frozen || draft?['fix'] == null) return;
+    if (status == 'corrected' && (name == null || name.trim().isEmpty)) {
+      throw StateError('Введите название.');
+    }
+    final choices = Map<String, dynamic>.from(
+      draft?['addressChoices'] as Map? ?? {},
+    );
+    choices[key] = {
+      'status': status,
+      if (status != 'unknown')
+        'name': status == 'accepted' ? reference!['name'] : name!.trim(),
+      if (reference != null && status != 'unknown') ...{
+        'id': reference['id'],
+        'reference_revision': reference['revision'],
+        'selected_name': reference['name'],
+      },
+    };
+    await save({...draft!, 'addressChoices': choices, 'addressArea': area});
+    notifyListeners();
+  }
+
+  Map<String, dynamic> addressPayload(Map<String, dynamic> fix) {
+    final choices = draft?['addressChoices'] as Map?;
+    if (draft?['addressArea'] != area ||
+        choices?['mahalla'] == null ||
+        choices?['street'] == null) {
+      throw StateError('Подтвердите махаллю и улицу или укажите «Неизвестно».');
+    }
+    final metadata = <String, dynamic>{
+      'lookup': {
+        'latitude': fix['latitude'],
+        'longitude': fix['longitude'],
+        'accuracy_m': fix['accuracy_m'],
+      },
+    };
+    final payload = <String, dynamic>{};
+    for (final key in ['mahalla', 'street']) {
+      final choice = choices![key] as Map;
+      payload['${key}_id'] = choice['id'];
+      payload[key == 'street' ? 'street' : 'mahalla_name'] = choice['name'];
+      metadata[key] = {
+        'status': choice['status'],
+        if (choice['reference_revision'] != null)
+          'reference_revision': choice['reference_revision'],
+        if (choice['selected_name'] != null)
+          'selected_name': choice['selected_name'],
+      };
+    }
+    payload['address_choices'] = metadata;
+    return payload;
+  }
+
   bool get frozen => draft?['place'] != null;
   bool get complete => draft?['photoDone'] == true;
   Future<void> run(Future<void> Function() work) async {
@@ -108,6 +223,11 @@ class CaptureController extends ChangeNotifier {
     if (areas.length == 1) {
       area = areas.first['collection_area_id'] as String;
     }
+    if (!frozen &&
+        draft?['addressArea'] != null &&
+        areas.any((a) => a['collection_area_id'] == draft!['addressArea'])) {
+      area = draft!['addressArea'] as String;
+    }
     if (!(me['capabilities'] as List).contains('locations') || areas.isEmpty) {
       throw StateError(
         'Нет назначения для сбора объектов. Обратитесь к администратору.',
@@ -172,13 +292,18 @@ class CaptureController extends ChangeNotifier {
     if (frozen) {
       return;
     }
+    final generation = ++_lookupGeneration;
     final p = await device.position();
+    if (generation != _lookupGeneration || frozen) return;
     final approximate = await device.approximate();
+    if (generation != _lookupGeneration || frozen) return;
     await save({
       ...?draft,
       'fix': GpsFix(p.latitude, p.longitude, p.accuracy, p.timestamp).toJson(),
       'approximate': approximate,
+      'addressChoices': null,
     });
+    await suggest();
   }
 
   Future<void> submit() => run(() async {
@@ -209,6 +334,7 @@ class CaptureController extends ChangeNotifier {
           'Фото превышает текущие лимиты сервера. Повторите съёмку.',
         );
       }
+      final address = addressPayload(fix);
       const uuid = Uuid();
       final place = uuid.v4();
       final entrance = uuid.v4();
@@ -222,6 +348,7 @@ class CaptureController extends ChangeNotifier {
           'type': type,
           'name': name.trim().isEmpty ? null : name.trim(),
           'source_type': 'field_observation',
+          ...address,
         },
         'entrance': {
           'id': entrance,
@@ -326,6 +453,8 @@ class CaptureController extends ChangeNotifier {
             ? actual != null &&
                   DateTime.parse('$actual')
                       .isAtSameMomentAs(DateTime.parse('$expected'))
+            : expected is Map || expected is List
+            ? _deepEqual(actual, expected)
             : actual == expected;
         if (!same) {
           throw StateError(
@@ -356,6 +485,15 @@ class CaptureController extends ChangeNotifier {
     }
   }
 
+  bool _deepEqual(dynamic a, dynamic b) {
+    if (a is Map && b is Map) {
+      return a.length == b.length &&
+          b.keys.every((k) => a.containsKey(k) && _deepEqual(a[k], b[k]));
+    }
+    if (a is List && b is List) return jsonEncode(a) == jsonEncode(b);
+    return a == b;
+  }
+
   Future<void> next() => run(() async {
     if (!complete) {
       return;
@@ -363,6 +501,8 @@ class CaptureController extends ChangeNotifier {
     final path = draft!['file'] as String;
     await store.clear();
     draft = null;
+    _lookupGeneration++;
+    suggestions = null;
     status = '';
     final f = File(path);
     if (await f.exists()) {

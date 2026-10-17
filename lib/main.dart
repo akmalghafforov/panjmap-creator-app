@@ -84,6 +84,166 @@ class _CaptureScreenState extends State<CaptureScreen> {
     padding: const EdgeInsets.symmetric(vertical: 6),
     child: FilledButton(onPressed: c.busy ? null : action, child: Text(label)),
   );
+  Widget addressReview(String key, String label, String kind) {
+    final choice = (c.draft?['addressChoices'] as Map?)?[key] as Map?;
+    final candidates = c.suggestions?[kind] as List? ?? [];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '$label: ${choice == null
+                  ? 'не подтверждено'
+                  : choice['status'] == 'unknown'
+                  ? 'Неизвестно'
+                  : choice['name']}',
+            ),
+            for (final candidate in candidates)
+              TextButton(
+                onPressed: c.busy
+                    ? null
+                    : () => c.run(
+                        () => c.chooseAddress(
+                          key,
+                          'accepted',
+                          reference: Map<String, dynamic>.from(
+                            candidate as Map,
+                          ),
+                        ),
+                      ),
+                child: Text(
+                  'Принять: ${candidate['name']}${candidate['distance_m'] == null ? '' : ' · ${(candidate['distance_m'] as num).round()} м'}',
+                ),
+              ),
+            Wrap(
+              children: [
+                TextButton(
+                  onPressed: c.busy
+                      ? null
+                      : () => searchAddress(key, label, kind),
+                  child: const Text('Найти другой'),
+                ),
+                TextButton(
+                  onPressed: c.busy ? null : () => correctAddress(key, label),
+                  child: const Text('Ввести название'),
+                ),
+                TextButton(
+                  onPressed: c.busy
+                      ? null
+                      : () => c.run(() => c.chooseAddress(key, 'unknown')),
+                  child: const Text('Неизвестно'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> correctAddress(String key, String label) async {
+    final field = TextEditingController();
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(label),
+        content: TextField(
+          controller: field,
+          maxLength: 255,
+          decoration: const InputDecoration(labelText: 'Исправленное название'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (field.text.trim().isNotEmpty) {
+                Navigator.pop(context, field.text.trim());
+              }
+            },
+            child: const Text('Применить'),
+          ),
+        ],
+      ),
+    );
+    field.dispose();
+    if (value != null) {
+      await c.run(() => c.chooseAddress(key, 'corrected', name: value));
+    }
+  }
+
+  Future<void> searchAddress(String key, String label, String kind) async {
+    final field = TextEditingController();
+    List<Map<String, dynamic>> results = [];
+    String? searchError;
+    var sequence = 0;
+    final reference = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: Text('Найти: $label'),
+          content: SizedBox(
+            width: 350,
+            height: 350,
+            child: Column(
+              children: [
+                TextField(
+                  controller: field,
+                  decoration: const InputDecoration(labelText: 'Название'),
+                  onSubmitted: (_) async {
+                    final current = ++sequence;
+                    try {
+                      final found = await c.searchAddress(kind, field.text);
+                      if (!context.mounted || current != sequence) return;
+                      update(() {
+                        results = found;
+                        searchError = null;
+                      });
+                    } catch (_) {
+                      if (context.mounted && current == sequence) {
+                        update(
+                          () => searchError = 'Поиск недоступен. Повторите.',
+                        );
+                      }
+                    }
+                  },
+                ),
+                const Text('Введите название и нажмите поиск на клавиатуре.'),
+                if (searchError != null) Text(searchError!),
+                Expanded(
+                  child: ListView(
+                    children: results
+                        .map(
+                          (r) => ListTile(
+                            title: Text(r['name'] as String),
+                            onTap: () => Navigator.pop(context, r),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Отмена'),
+            ),
+          ],
+        ),
+      ),
+    );
+    field.dispose();
+    if (reference != null) {
+      await c.run(() => c.chooseAddress(key, 'accepted', reference: reference));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final types = (c.config['enums'] as Map?)?['place_type'] as List? ?? [];
@@ -138,7 +298,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
                         ),
                       )
                       .toList(),
-                  onChanged: c.busy ? null : (v) => setState(() => c.area = v),
+                  onChanged: c.busy
+                      ? null
+                      : (v) => c.run(() => c.changeArea(v)),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
@@ -183,6 +345,17 @@ class _CaptureScreenState extends State<CaptureScreen> {
                 const Text(
                   'Внимание: приблизительное местоположение или точность хуже 30 м.',
                 ),
+              if (!c.frozen && c.draft?['fix'] != null) ...[
+                if (c.suggestionError != null) Text(c.suggestionError!),
+                if ((c.suggestions?['ambiguity_reasons'] as List? ?? [])
+                    .isNotEmpty)
+                  const Text(
+                    'Адрес неоднозначен: рядом граница, пересечение махаллей или несколько улиц. Проверьте выбор.',
+                  ),
+                addressReview('mahalla', 'Махалля', 'mahallas'),
+                addressReview('street', 'Улица', 'streets'),
+                button('Повторить подсказки', () => c.run(c.suggest)),
+              ],
               if (c.frozen)
                 SelectableText(
                   'Объект: ${c.draft!['place']['id']}\nВход: ${c.draft!['entrance']['id']}\nФото: ${c.draft!['photoId']}',
