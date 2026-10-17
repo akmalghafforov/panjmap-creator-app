@@ -1,0 +1,98 @@
+import 'package:dio/dio.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:panjmap_capture/capture/controller.dart';
+import 'package:panjmap_capture/capture/services.dart';
+
+import 'controller_test.dart' show MemoryStore, Device;
+
+class Server extends CaptureApi {
+  Server() : super('https://example.test/api/v1');
+  final records = <String, Map<String, dynamic>>{};
+  final writes = <String>[];
+  bool lose = true;
+  @override
+  Future<dynamic> get(String path) async {
+    if (records.containsKey(path)) {
+      return records[path];
+    }
+    throw DioException(
+      requestOptions: RequestOptions(path: path),
+      response: Response(
+        requestOptions: RequestOptions(path: path),
+        statusCode: 404,
+      ),
+    );
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    dynamic body, {
+    String? key,
+    ProgressCallback? progress,
+  }) async {
+    final data = Map<String, dynamic>.from(body as Map);
+    writes.add('$path:$key');
+    records['$path/${data['id']}'] = data;
+    if (lose) {
+      lose = false;
+      throw DioException(
+        requestOptions: RequestOptions(path: path),
+        type: DioExceptionType.receiveTimeout,
+      );
+    }
+    return data;
+  }
+}
+
+void main() {
+  test(
+    'Lost create response reconciles after restart without duplicate write',
+    () async {
+      final server = Server(), store = MemoryStore();
+      final c = CaptureController(server, store, Device())
+        ..authenticated = true
+        ..account = 'a';
+      await c.save({
+        'origin': server.origin,
+        'account': 'a',
+        'place': {'id': 'p', 'type': 'shop'},
+        'entrance': {'id': 'e', 'place_id': 'p'},
+        'photoId': 'f',
+        'placeKey': 'pk',
+        'entranceKey': 'ek',
+        'photoKey': 'fk',
+        'file': 'missing',
+        'size': 1,
+        'captured_at': '2026-01-01T00:00:00Z',
+      });
+      await c.submit();
+      expect(server.writes, ['places:pk']);
+      final restored = CaptureController(server, store, Device())
+        ..authenticated = true
+        ..account = 'a'
+        ..draft = store.value;
+      await restored.submit();
+      expect(server.writes, ['places:pk', 'entrances:ek']);
+      expect(restored.draft!['placeDone'], true);
+      expect(restored.draft!['entranceDone'], true);
+      expect(restored.draft!['photoId'], 'f');
+    },
+  );
+  test('Inconsistent UUID stops before another write', () async {
+    final server = Server();
+    server.records['places/p'] = {'id': 'p', 'type': 'other'};
+    final c = CaptureController(server, MemoryStore(), Device())
+      ..authenticated = true
+      ..account = 'a';
+    await c.save({
+      'origin': server.origin,
+      'account': 'a',
+      'place': {'id': 'p', 'type': 'shop'},
+      'placeKey': 'pk',
+    });
+    await c.submit();
+    expect(server.writes, isEmpty);
+    expect(c.error, contains('Несовпадение'));
+  });
+}
