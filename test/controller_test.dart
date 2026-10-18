@@ -103,7 +103,6 @@ void main() {
   });
   test('Stale location prevents writes', () async {
     c.authenticated = true;
-    c.area = 'area';
     c.type = 'shop';
     await c.save({
       'houseNumber': '12А',

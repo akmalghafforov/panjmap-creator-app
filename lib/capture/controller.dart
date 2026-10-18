@@ -24,8 +24,7 @@ class CaptureController extends ChangeNotifier {
   CaptureController(this.api, this.store, this.device);
   Map<String, dynamic>? draft;
   Map<String, dynamic> config = {};
-  List<Map<String, dynamic>> areas = [];
-  String? account, area, type, error;
+  String? account, type, error;
   String status = '';
   String get houseNumber => draft?['houseNumber'] as String? ?? '';
   String get entranceNumber => draft?['entranceNumber'] as String? ?? '';
@@ -50,7 +49,6 @@ class CaptureController extends ChangeNotifier {
       }
     }
 
-    required('area', area, 255);
     for (final key in ['mahalla', 'street']) {
       required(
         key,
@@ -80,6 +78,9 @@ class CaptureController extends ChangeNotifier {
     if (_authenticated == value) return;
     _authenticated = value;
     sessionGeneration++;
+    _lookupGeneration++;
+    suggestions = null;
+    suggestionError = null;
     recentObjects = [];
     recentError = null;
     recentLoading = false;
@@ -176,53 +177,37 @@ class CaptureController extends ChangeNotifier {
   Map<String, dynamic>? suggestions;
   String? suggestionError;
   Map<String, dynamic>? _suggestionFix;
-  String? _suggestionArea;
-
-  Future<void> changeArea(String? value) async {
-    if (frozen || area == value) return;
-    area = value;
-    _lookupGeneration++;
-    suggestions = null;
-    fieldErrors.remove('area');
-    await save({
-      ...?draft,
-      'addressChoices': manualChoices(),
-      'addressArea': area,
-    });
-    await suggest();
-  }
-
+  int? _suggestionSession;
   Future<void> suggest() async {
-    if (frozen || area == null || draft?['fix'] == null) return;
+    if (frozen || !authenticated || draft?['fix'] == null) return;
     final generation = ++_lookupGeneration;
-    await save({
-      ...draft!,
-      'addressChoices': manualChoices(),
-      'addressArea': area,
-    });
-    if (generation != _lookupGeneration || frozen) return;
+    await save({...draft!, 'addressChoices': manualChoices()});
+    if (generation != _lookupGeneration || frozen || !authenticated) return;
     final fix = Map<String, dynamic>.from(draft!['fix'] as Map);
-    final lookupArea = area;
+    final session = sessionGeneration;
     suggestions = null;
     suggestionError = null;
     notifyListeners();
     try {
       final query = Uri(
         queryParameters: {
-          'collection_area_id': lookupArea!,
           'latitude': '${fix['latitude']}',
           'longitude': '${fix['longitude']}',
           'accuracy_m': '${fix['accuracy_m']}',
         },
       ).query;
       final result = await api.get('geography/suggestions?$query');
-      if (generation != _lookupGeneration || frozen || area != lookupArea) {
+      if (generation != _lookupGeneration ||
+          frozen ||
+          session != sessionGeneration ||
+          !authenticated) {
         return;
       }
       if (!_deepEqual(draft?['fix'], fix)) return;
       suggestions = Map<String, dynamic>.from(result as Map);
       _suggestionFix = fix;
-      _suggestionArea = lookupArea;
+      _suggestionSession = session;
+
       final choices = manualChoices();
       for (final key in ['mahalla', 'street']) {
         final candidate = reliableSuggestion(key);
@@ -230,9 +215,9 @@ class CaptureController extends ChangeNotifier {
           choices[key] = referenceChoice(candidate, 'automatic');
         }
       }
-      await save({...?draft, 'addressChoices': choices, 'addressArea': area});
+      await save({...?draft, 'addressChoices': choices});
     } catch (_) {
-      if (generation != _lookupGeneration || frozen) return;
+      if (generation != _lookupGeneration || frozen || !authenticated) return;
       suggestionError =
           'Подсказки недоступны. Введите обязательные названия вручную.';
     }
@@ -255,7 +240,9 @@ class CaptureController extends ChangeNotifier {
   };
 
   Map<String, dynamic>? reliableSuggestion(String key) {
-    if (_suggestionArea != area || !_deepEqual(_suggestionFix, draft?['fix'])) {
+    if (!authenticated ||
+        _suggestionSession != sessionGeneration ||
+        !_deepEqual(_suggestionFix, draft?['fix'])) {
       return null;
     }
     final accuracy = draft?['fix']?['accuracy_m'];
@@ -326,13 +313,12 @@ class CaptureController extends ChangeNotifier {
     String kind,
     String query,
   ) async {
-    if (area == null) return [];
-    final params = Uri(
-      queryParameters: {'collection_area_id': area!, 'q': query},
-    ).query;
-    return (await api.get('geography/$kind?$params') as List)
-        .map((r) => Map<String, dynamic>.from(r as Map))
-        .toList();
+    if (!authenticated) return [];
+    final session = sessionGeneration;
+    final params = Uri(queryParameters: {'q': query}).query;
+    final rows = await api.get('geography/$kind?$params') as List;
+    if (!authenticated || session != sessionGeneration) return [];
+    return rows.map((r) => Map<String, dynamic>.from(r as Map)).toList();
   }
 
   Future<void> chooseAddress(
@@ -360,7 +346,7 @@ class CaptureController extends ChangeNotifier {
       },
     };
     fieldErrors.remove(key);
-    await save({...?draft, 'addressChoices': choices, 'addressArea': area});
+    await save({...?draft, 'addressChoices': choices});
     notifyListeners();
   }
 
@@ -418,7 +404,7 @@ class CaptureController extends ChangeNotifier {
       return switch (e.response?.statusCode) {
         401 => 'Сессия истекла. Войдите снова; запись сохранена.',
         403 => 'Нет доступа. Обратитесь к администратору.',
-        404 => 'Запись недоступна. Проверьте назначение с администратором.',
+        404 => 'Запись недоступна. Обратитесь к администратору.',
         409 => 'Конфликт записи. Повторите для проверки UUID; при повторном конфликте обратитесь к администратору.',
         413 => 'Фото превышает лимит сервера.',
         422 => 'Сервер отклонил данные. Проверьте конфигурацию и обратитесь к администратору.',
@@ -434,6 +420,7 @@ class CaptureController extends ChangeNotifier {
 
   Future<void> initialize() => run(() async {
     draft = await store.read();
+    await normalizeDraft();
     type = draft?['type'] as String?;
     if (!frozen) {
       await capture(recover: true);
@@ -464,33 +451,36 @@ class CaptureController extends ChangeNotifier {
     config = Map<String, dynamic>.from(
       await api.get('collection-config') as Map,
     );
-    final assignments = await api.get('assignments') as List;
-    areas = assignments.map((a) => Map<String, dynamic>.from(a as Map)).where((
-      a,
-    ) {
-      final c = a['capabilities'];
-      return c == null ||
-          (c is List
-              ? c.contains('locations')
-              : c.toString().contains('locations'));
-    }).toList();
-    if (areas.length == 1) {
-      area = areas.first['collection_area_id'] as String;
-    }
-    if (!frozen &&
-        draft?['addressArea'] != null &&
-        areas.any((a) => a['collection_area_id'] == draft!['addressArea'])) {
-      area = draft!['addressArea'] as String;
-    }
-    if (!(me['capabilities'] as List).contains('locations') || areas.isEmpty) {
+    if (!(me['capabilities'] as List).contains('locations')) {
       throw StateError(
-        'Нет назначения для сбора объектов. Обратитесь к администратору.',
+        'Нет доступа к сбору объектов. Обратитесь к администратору.',
       );
     }
     authenticated = true;
     unawaited(refreshMapLocation());
     unawaited(refreshRecentObjects());
     if (!frozen) await suggest();
+  }
+
+  Future<void> normalizeDraft() async {
+    if (draft == null) return;
+    final next = Map<String, dynamic>.from(draft!);
+    var changed = false;
+    for (final key in ['addressArea', 'area', 'collection_area_id']) {
+      if (next.containsKey(key)) {
+        next.remove(key);
+        changed = true;
+      }
+    }
+    if (next['place'] is Map &&
+        (next['place'] as Map).containsKey('collection_area_id')) {
+      final place = Map<String, dynamic>.from(next['place'] as Map)
+        ..remove('collection_area_id');
+      next['place'] = place;
+      next['placeKey'] = const Uuid().v4();
+      changed = true;
+    }
+    if (changed) await save(next);
   }
 
   Future<void> save(Map<String, dynamic> next) async {
@@ -566,15 +556,14 @@ class CaptureController extends ChangeNotifier {
       mapRevision++;
       notifyListeners();
     }
-    if (generation != _lookupGeneration || frozen) return;
+    if (generation != _lookupGeneration || frozen || !authenticated) return;
     final approximate = await device.approximate();
-    if (generation != _lookupGeneration || frozen) return;
+    if (generation != _lookupGeneration || frozen || !authenticated) return;
     await save({
       ...?draft,
       'fix': GpsFix(p.latitude, p.longitude, p.accuracy, p.timestamp).toJson(),
       'approximate': approximate,
       'addressChoices': manualChoices(),
-      'addressArea': area,
     });
     await suggest();
   }
@@ -583,13 +572,11 @@ class CaptureController extends ChangeNotifier {
     if (!authenticated) {
       throw StateError('Войдите в систему.');
     }
+    await normalizeDraft();
     if (!frozen) {
       if (!validateFields()) throw StateError('Заполните обязательные поля.');
-      if (area == null ||
-          type == null ||
-          draft?['file'] == null ||
-          draft?['fix'] == null) {
-        throw StateError('Выберите участок, тип, фото и координаты.');
+      if (type == null || draft?['file'] == null || draft?['fix'] == null) {
+        throw StateError('Выберите тип, фото и координаты.');
       }
       final fix = Map<String, dynamic>.from(draft!['fix'] as Map);
       if (DateTime.now()
@@ -618,7 +605,6 @@ class CaptureController extends ChangeNotifier {
         'account': account,
         'place': {
           'id': place,
-          'collection_area_id': area,
           'type': type,
           'name': null,
           'house_number': houseNumber.trim(),

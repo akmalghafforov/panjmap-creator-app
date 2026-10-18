@@ -89,6 +89,60 @@ void main() {
       expect(restored.recentObjects.single['id'], 'p');
     },
   );
+  test(
+    'legacy frozen payload rotates its persisted key once and reconciles UUID',
+    () async {
+      final server = Server(), store = MemoryStore();
+      server.records['places/p'] = {'id': 'p', 'type': 'shop'};
+      final c = CaptureController(server, store, Device())
+        ..authenticated = true
+        ..account = 'a';
+      await c.save({
+        'origin': server.origin,
+        'account': 'a',
+        'addressArea': 'old',
+        'place': {'id': 'p', 'type': 'shop', 'collection_area_id': 'old'},
+        'entrance': {'id': 'e', 'place_id': 'p'},
+        'placeKey': 'old-key',
+        'entranceKey': 'ek',
+        'photoId': 'f',
+        'photoKey': 'fk',
+        'file': 'missing',
+        'size': 1,
+        'captured_at': '2026-01-01T00:00:00Z',
+      });
+      await c.normalizeDraft();
+      final key = store.value!['placeKey'];
+      expect(key, isNot('old-key'));
+      expect(store.value!.containsKey('addressArea'), false);
+      expect(
+        (store.value!['place'] as Map).containsKey('collection_area_id'),
+        false,
+      );
+      await c.normalizeDraft();
+      expect(store.value!['placeKey'], key);
+      await c.submit();
+      expect(c.draft!['placeDone'], true);
+      expect(c.draft!['place']['id'], 'p');
+      expect(server.writes, ['entrances:ek']);
+      expect(store.value!['placeKey'], key);
+    },
+  );
+  test('legacy normalization must persist before network writes', () async {
+    final server = Server(), store = MemoryStore();
+    final c = CaptureController(server, store, Device())
+      ..authenticated = true
+      ..account = 'a';
+    await c.save({
+      'place': {'id': 'p', 'collection_area_id': 'old'},
+      'placeKey': 'old',
+    });
+    store.fail = true;
+    await c.submit();
+    expect(server.writes, isEmpty);
+    expect(c.draft!['placeKey'], 'old');
+    expect(c.error, isNotNull);
+  });
   test('Inconsistent UUID stops before another write', () async {
     final server = Server();
     server.records['places/p'] = {'id': 'p', 'type': 'other'};

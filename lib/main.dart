@@ -71,7 +71,6 @@ class _CaptureScreenState extends State<CaptureScreen> {
   };
   final anchors = {
     for (final key in [
-      'area',
       'mahalla',
       'street',
       'type',
@@ -308,12 +307,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
     Map current,
     Map<String, dynamic> proposed,
   ) async {
-    final originalArea = c.area;
     final originalFix = c.draft?['fix'];
     final originalSuggestions = c.suggestions;
     if (await confirmReplacement(current, proposed)) {
       if (c.suggestions != originalSuggestions ||
-          c.area != originalArea ||
           c.draft?['fix'] != originalFix ||
           (c.draft?['addressChoices'] as Map?)?[key] != current) {
         return;
@@ -502,28 +499,6 @@ class _CaptureScreenState extends State<CaptureScreen> {
                                   }),
                                 ] else ...[
                                   if (!c.frozen) ...[
-                                    DropdownButtonFormField<String>(
-                                      key: anchors['area'],
-                                      initialValue: c.area,
-                                      decoration: InputDecoration(
-                                        errorText: c.fieldErrors['area'],
-                                        labelText: 'Участок сбора',
-                                      ),
-                                      items: c.areas
-                                          .map(
-                                            (a) => DropdownMenuItem(
-                                              value:
-                                                  a['collection_area_id']
-                                                      as String,
-                                              child: Text('${a['name']}'),
-                                            ),
-                                          )
-                                          .toList(),
-                                      onChanged: c.busy
-                                          ? null
-                                          : (v) => c.run(() => c.changeArea(v)),
-                                    ),
-                                    const SizedBox(height: 12),
                                     addressReview(
                                       'mahalla',
                                       'Махалля',

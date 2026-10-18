@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:panjmap_capture/capture/controller.dart';
@@ -40,8 +41,22 @@ class FreshDevice extends Device {
 class RestoreServer extends CaptureApi {
   RestoreServer() : super('https://example.test/api/v1');
   int lookups = 0;
+  final requests = <String>[];
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    dynamic body, {
+    String? key,
+    progress,
+  }) async {
+    requests.add(path);
+    return {'token': 'synthetic'};
+  }
+
   @override
   Future<dynamic> get(String path) async {
+    requests.add(path);
+    if (path == 'assignments') throw StateError('obsolete endpoint');
     if (path == 'places/recent?limit=20') return [];
     if (path == 'auth/me') {
       return {
@@ -50,11 +65,6 @@ class RestoreServer extends CaptureApi {
       };
     }
     if (path == 'collection-config') return <String, dynamic>{};
-    if (path == 'assignments') {
-      return [
-        {'collection_area_id': 'area'},
-      ];
-    }
     lookups++;
     return {
       'recommended_mahalla_id': 'm',
@@ -73,9 +83,22 @@ void main() {
   setUp(() async {
     server = GeographyServer();
     store = MemoryStore();
-    c = CaptureController(server, store, Device())..area = 'area';
+    c = CaptureController(server, store, Device())..authenticated = true;
     await c.save({'fix': fix});
   });
+  test(
+    'login succeeds without assignment data or an assignment request',
+    () async {
+      FlutterSecureStorage.setMockInitialValues({});
+      final api = RestoreServer();
+      final controller = CaptureController(api, MemoryStore(), Device());
+      await controller.login('mapper@example.test', 'synthetic');
+      expect(controller.authenticated, true);
+      expect(controller.error, isNull);
+      expect(api.requests, contains('auth/me'));
+      expect(api.requests, isNot(contains('assignments')));
+    },
+  );
   test('acceptance, correction and unknown serialize snapshots', () async {
     await c.chooseAddress(
       'mahalla',
@@ -88,8 +111,7 @@ void main() {
     expect(payload['street'], 'Новая улица');
     expect(payload['address_choices']['mahalla']['reference_revision'], 2);
     final restored = CaptureController(server, store, Device())
-      ..draft = store.value
-      ..area = 'area';
+      ..draft = store.value;
     expect(restored.addressPayload(fix), payload);
     await c.chooseAddress('street', 'unknown');
     expect(c.addressPayload(fix)['street'], null);
@@ -133,7 +155,7 @@ void main() {
     'fresh GPS preserves manual clearing and uses the entrance coordinate',
     () async {
       final fresh = CaptureController(server, store, FreshDevice())
-        ..area = 'area';
+        ..authenticated = true;
       await fresh.save({'fix': fix});
       await fresh.chooseAddress('mahalla', 'unknown');
       await fresh.chooseAddress('street', 'unknown');
@@ -156,12 +178,14 @@ void main() {
     expect(server.pending, isEmpty);
   });
   test(
-    'area change preserves manual choices and ignores old response',
+    'session change preserves manual choices and ignores old response',
     () async {
       await c.chooseAddress('mahalla', 'unknown');
       final old = c.suggest();
       await Future<void>.delayed(Duration.zero);
-      final changed = c.changeArea('another');
+      c.authenticated = false;
+      c.authenticated = true;
+      final changed = c.suggest();
       await Future<void>.delayed(Duration.zero);
       server.pending.last.complete({'recommended_mahalla_id': 'new'});
       await changed;
@@ -329,8 +353,8 @@ void main() {
       reference: {'id': 'manual', 'name': 'Выбранная', 'revision': 7},
     );
     final fresh = CaptureController(server, store, FreshDevice())
-      ..draft = store.value
-      ..area = 'area';
+      ..authenticated = true
+      ..draft = store.value;
     server.fail = true;
     await fresh.locate();
     expect(fresh.addressPayload(fix)['mahalla_id'], 'manual');

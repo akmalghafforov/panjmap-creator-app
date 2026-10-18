@@ -22,7 +22,6 @@ void main() {
         final c = CaptureController(api, store, Device())
           ..authenticated = true
           ..account = 'account'
-          ..area = 'area'
           ..config = {'photo_max_kb': 10240, 'photo_max_pixels': 24000000};
         await c.save({
           'file': photo.path,
@@ -85,8 +84,7 @@ void main() {
   test(
     'all seven types require address, only apartments require entrance',
     () async {
-      final c = CaptureController(Server(), MemoryStore(), Device())
-        ..area = 'area';
+      final c = CaptureController(Server(), MemoryStore(), Device());
       await c.save({'file': 'photo', 'fix': {}, 'houseNumber': '12'});
       await c.chooseAddress('mahalla', 'corrected', name: 'Махалля');
       await c.chooseAddress('street', 'corrected', name: 'Улица');

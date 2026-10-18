@@ -46,10 +46,13 @@ void main() {
         ..token('secret');
       await api.post('places', {
         'id': 'p',
-        'collection_area_id': 'a',
         'type': 'shop',
         'source_type': 'field_observation',
       }, key: 'pk');
+      expect(
+        jsonDecode(adapter.bodies.first),
+        isNot(contains('collection_area_id')),
+      );
       expect(adapter.requests.first.uri.path, '/api/v1/places');
       expect(adapter.requests.first.headers['Authorization'], 'Bearer secret');
       expect(

@@ -1,6 +1,6 @@
 # Panjmap Android capture
 
-Russian field capture MVP: sign in, choose assigned area and place type, photograph an entrance, obtain foreground GPS, review and submit. Android API 24+. New places only; one recoverable draft. Includes a display-only map and recent server-created objects; no citizen records, background location or background synchronization.
+Russian field capture MVP: sign in, choose a place type, photograph an entrance, obtain foreground GPS, review and submit. Android API 24+. New places only; one recoverable draft. Includes a display-only map and recent server-created objects; no citizen records, background location or background synchronization.
 
 ## Prerequisites and run
 
@@ -37,7 +37,7 @@ The helper uses `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then `android/local.pro
 
 Companion changes are in `../panjmap`. Deploy them before using this client:
 
-1. Run `php artisan migrate --force` as the migration owner. Incremental migration `2026_10_17_000001_extend_capture_contract.php` adds `shop`, `building`, `other` to the place check and prevents residence links to them. Existing residential types retain their rules. Rolling back requires removing/reclassifying new-type records first.
+1. Coordinate this breaking update with the backend: back up the database and pause API writes and workers before deployment. Run `php artisan migrate --force` as the migration owner. The `2026_10_18_000002_remove_collection_areas.php` migration irreversibly removes collection areas and assignments; recovery requires the pre-upgrade backup. Update the mobile client, smoke-test login, address lookup, photo/GPS, submission, recent objects and restart/retry, then resume service. Access is shared according to active-account, role, capability and token checks; recent objects remain creator-only. Incremental migration `2026_10_17_000001_extend_capture_contract.php` adds `shop`, `building`, `other` to the place check and prevents residence links to them. Existing residential types retain their rules. Rolling back requires removing/reclassifying new-type records first.
 2. Deploy the optional photo upload `id` field and UUID advisory locking. Old clients may omit `id`. Reusing an accepted UUID with another logical request returns 409 before storage writes. The transaction lock covers the outer idempotency receipt commit.
 3. Configure private photo storage and run `php artisan queue:work`. Upload confirmation and processing completion are separate; the worker must be running for processing to finish.
 
@@ -54,7 +54,7 @@ php artisan serve --host=0.0.0.0 --port=8000
 php artisan queue:work
 ```
 
-The backend seeder provides `mapper@example.test`, `collector@example.test`, and `reviewer@example.test`, password `synthetic-test-password`, assigned to “Synthetic pilot area”. Use synthetic data only. Administrator accounts do not have field collection capability. Do not seed these accounts in production.
+The backend seeder provides `mapper@example.test`, `collector@example.test`, and `reviewer@example.test`, password `synthetic-test-password`. Use synthetic data only. Administrator accounts do not have field collection capability. Do not seed these accounts in production.
 
 ## Recovery and operations
 
@@ -123,3 +123,5 @@ flutter_map (без предзагрузки и массового скачив�
 Endpoint возвращает существующие place resources в `data`, только созданные текущим
 пользователем в доступных назначенных участках, по `created_at DESC, id DESC`.
 `limit`: 1–100, по умолчанию 20; без пагинации и новых миграций.
+
+Legacy drafts lose obsolete area metadata before use. If normalization changes a frozen place payload, its replacement idempotency key is saved before network activity. Record UUIDs are retained and reconciled before writes.

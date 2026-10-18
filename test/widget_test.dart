@@ -55,9 +55,7 @@ void main() {
     await tester.tap(find.byTooltip('Добавить новый объект'));
     await tester.pumpAndSettle();
     final type = tester
-        .widgetList<DropdownButton<String>>(
-          find.byType(DropdownButton<String>),
-        )
+        .widgetList<DropdownButton<String>>(find.byType(DropdownButton<String>))
         .last;
     expect(
       type.items!.map((item) => item.value).toList(),
@@ -154,12 +152,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    final c = ScreenController()
-      ..authenticated = true
-      ..area = 'area'
-      ..areas = [
-        {'collection_area_id': 'area', 'name': 'Участок'},
-      ];
+    final c = ScreenController()..authenticated = true;
     await c.save({
       'fix': {'latitude': 39.5, 'longitude': 67.6, 'accuracy_m': 8},
     });
