@@ -34,8 +34,16 @@ void main() {
         await c.editField('type', type);
         await c.editField('houseNumber', ' 12А ');
         await c.editField('entranceNumber', ' 2Б ');
-        await c.chooseAddress('mahalla', 'corrected', name: ' Махалля ');
-        await c.chooseAddress('street', 'corrected', name: ' Улица ');
+        await c.chooseAddress(
+          'mahalla',
+          'accepted',
+          reference: {'id': 'mahalla', 'name': ' Махалля ', 'revision': 1},
+        );
+        await c.chooseAddress(
+          'street',
+          'accepted',
+          reference: {'id': 'street', 'name': ' Улица ', 'revision': 1},
+        );
         await c.submit();
         expect(c.frozen, true);
         expect(c.draft!['place']['house_number'], '12А');
@@ -86,8 +94,16 @@ void main() {
     () async {
       final c = CaptureController(Server(), MemoryStore(), Device());
       await c.save({'file': 'photo', 'fix': {}, 'houseNumber': '12'});
-      await c.chooseAddress('mahalla', 'corrected', name: 'Махалля');
-      await c.chooseAddress('street', 'corrected', name: 'Улица');
+      await c.chooseAddress(
+        'mahalla',
+        'accepted',
+        reference: {'id': 'mahalla', 'name': 'Махалля', 'revision': 1},
+      );
+      await c.chooseAddress(
+        'street',
+        'accepted',
+        reference: {'id': 'street', 'name': 'Улица', 'revision': 1},
+      );
       expect(capturePlaceTypes.length, 7);
       for (final type in capturePlaceTypes.keys) {
         await c.editField('type', type);

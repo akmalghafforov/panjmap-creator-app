@@ -176,9 +176,16 @@ void main() {
           .first,
     );
     expect(find.widgetWithText(TextField, 'Автоматическая'), findsOneWidget);
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Автоматическая'),
-      'Ручная',
+    expect(
+      tester
+          .widget<TextField>(find.widgetWithText(TextField, 'Автоматическая'))
+          .readOnly,
+      true,
+    );
+    await c.chooseAddress(
+      'mahalla',
+      'accepted',
+      reference: {'id': 'manual', 'name': 'Ручная', 'revision': 2},
     );
     await tester.pumpAndSettle();
     await tester.tap(find.text('Заменить: Автоматическая'));

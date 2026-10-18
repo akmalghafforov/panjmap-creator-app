@@ -8,6 +8,7 @@ import 'package:panjmap_capture/capture/services.dart';
 class Adapter implements HttpClientAdapter {
   final requests = <RequestOptions>[];
   final bodies = <String>[];
+  String response = '{"data":{"id":"result"}}';
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
@@ -23,7 +24,7 @@ class Adapter implements HttpClientAdapter {
     }
     bodies.add(utf8.decode(bytes, allowMalformed: true));
     return ResponseBody.fromString(
-      '{"data":{"id":"result"}}',
+      response,
       201,
       headers: {
         Headers.contentTypeHeader: ['application/json'],
@@ -36,6 +37,27 @@ class Adapter implements HttpClientAdapter {
 }
 
 void main() {
+  test(
+    'paginated helper preserves metadata and authenticated encoded queries',
+    () async {
+      final adapter = Adapter()
+        ..response = '{"data":[],"meta":{"current_page":2,"last_page":3}}';
+      final dio = Dio(BaseOptions(baseUrl: 'https://example.test/api/v1/'))
+        ..httpClientAdapter = adapter;
+      final api = CaptureApi('https://example.test/api/v1', client: dio)
+        ..token('secret');
+      final query = Uri(
+        queryParameters: {'q': 'Улица & сад', 'page': '2', 'per_page': '100'},
+      ).query;
+      final result = await api.getPage('geography/streets?$query');
+      expect(result['meta']['last_page'], 3);
+      expect(result['data'], isEmpty);
+      expect(adapter.requests.single.uri.queryParameters['q'], 'Улица & сад');
+      expect(adapter.requests.single.uri.path, '/api/v1/geography/streets');
+      expect(adapter.requests.single.headers['Authorization'], 'Bearer secret');
+      expect(await api.get('geography/mahallas'), isEmpty);
+    },
+  );
   test(
     'Contract paths, bearer, JSON and multipart retry keys remain stable',
     () async {

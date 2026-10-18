@@ -113,6 +113,9 @@ class CaptureApi {
 
   Future<dynamic> get(String path) async =>
       (await dio.get<dynamic>(path)).data['data'];
+  Future<Map<String, dynamic>> getPage(String path) async =>
+      Map<String, dynamic>.from((await dio.get<dynamic>(path)).data as Map);
+
   Future<Map<String, dynamic>> post(
     String path,
     dynamic body, {

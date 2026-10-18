@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:async';
 
 import 'capture/collector_map.dart';
+import 'capture/address_selector.dart';
 import 'capture/recent_objects.dart';
 
 import 'package:flutter/foundation.dart';
@@ -97,13 +98,7 @@ class _CaptureScreenState extends State<CaptureScreen>
             errorText: c.fieldErrors[key],
           ),
           onChanged: (v) {
-            final work = key == 'mahalla' || key == 'street'
-                ? c.chooseAddress(
-                    key,
-                    v.trim().isEmpty ? 'unknown' : 'corrected',
-                    name: v,
-                  )
-                : c.editField(key, v);
+            final work = c.editField(key, v);
             unawaited(
               work.catchError((Object e) {
                 c.error = c.message(e);
@@ -216,13 +211,22 @@ class _CaptureScreenState extends State<CaptureScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            input(key, label, 255),
+            TextField(
+              key: anchors[key],
+              controller: fields[key],
+              readOnly: true,
+              enabled: !c.busy,
+              decoration: InputDecoration(
+                labelText: label,
+                errorText: c.fieldErrors[key],
+                suffixIcon: const Icon(Icons.arrow_drop_down),
+              ),
+              onTap: () => searchAddress(key, label, kind),
+            ),
             if (choice?['provenance'] == 'automatic')
               const Text('Заполнено автоматически'),
             if (choice == null || choice['status'] == 'unknown')
-              const Text(
-                'Обязательное поле. Введите название или выберите из справочника.',
-              ),
+              const Text('Обязательное поле. Выберите название из списка.'),
             if (choice != null &&
                 choice['provenance'] != 'automatic' &&
                 proposed != null &&
@@ -261,12 +265,6 @@ class _CaptureScreenState extends State<CaptureScreen>
               ),
             Wrap(
               children: [
-                TextButton(
-                  onPressed: c.busy
-                      ? null
-                      : () => searchAddress(key, label, kind),
-                  child: const Text('Найти другой'),
-                ),
                 TextButton(
                   onPressed: c.busy
                       ? null
@@ -318,10 +316,14 @@ class _CaptureScreenState extends State<CaptureScreen>
     Map current,
     Map<String, dynamic> proposed,
   ) async {
+    final session = c.sessionGeneration;
     final originalFix = c.draft?['fix'];
     final originalSuggestions = c.suggestions;
     if (await confirmReplacement(current, proposed)) {
-      if (c.suggestions != originalSuggestions ||
+      if (!mounted ||
+          !c.authenticated ||
+          session != c.sessionGeneration ||
+          c.suggestions != originalSuggestions ||
           c.draft?['fix'] != originalFix ||
           (c.draft?['addressChoices'] as Map?)?[key] != current) {
         return;
@@ -331,70 +333,17 @@ class _CaptureScreenState extends State<CaptureScreen>
   }
 
   Future<void> searchAddress(String key, String label, String kind) async {
-    final field = TextEditingController();
-    List<Map<String, dynamic>> results = [];
-    String? searchError;
-    var sequence = 0;
-    final route = DialogRoute<Map<String, dynamic>>(
+    final session = c.sessionGeneration;
+    final reference = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, update) => AlertDialog(
-          title: Text('Найти: $label'),
-          content: SizedBox(
-            width: 350,
-            height: 350,
-            child: Column(
-              children: [
-                TextField(
-                  controller: field,
-                  decoration: const InputDecoration(labelText: 'Название'),
-                  onSubmitted: (_) async {
-                    final current = ++sequence;
-                    try {
-                      final found = await c.searchAddress(kind, field.text);
-                      if (!context.mounted || current != sequence) return;
-                      update(() {
-                        results = found;
-                        searchError = null;
-                      });
-                    } catch (_) {
-                      if (context.mounted && current == sequence) {
-                        update(
-                          () => searchError = 'Поиск недоступен. Повторите.',
-                        );
-                      }
-                    }
-                  },
-                ),
-                const Text('Введите название и нажмите поиск на клавиатуре.'),
-                if (searchError != null) Text(searchError!),
-                Expanded(
-                  child: ListView(
-                    children: results
-                        .map(
-                          (r) => ListTile(
-                            title: Text(r['name'] as String),
-                            onTap: () => Navigator.pop(context, r),
-                          ),
-                        )
-                        .toList(),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Отмена'),
-            ),
-          ],
-        ),
-      ),
+      builder: (_) => AddressSelector(controller: c, kind: kind, label: label),
     );
-    final reference = await Navigator.of(context).push(route);
-    await route.completed;
-    field.dispose();
+    if (!mounted ||
+        !c.authenticated ||
+        session != c.sessionGeneration ||
+        c.frozen) {
+      return;
+    }
     if (reference != null) {
       final current = (c.draft?['addressChoices'] as Map?)?[key] as Map?;
       if (current != null && current['provenance'] != 'automatic') {

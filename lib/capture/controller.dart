@@ -157,11 +157,13 @@ class CaptureController extends ChangeNotifier {
     }
 
     for (final key in ['mahalla', 'street']) {
-      required(
-        key,
-        (draft?['addressChoices'] as Map?)?[key]?['name'] as String?,
-        255,
-      );
+      final choice = (draft?['addressChoices'] as Map?)?[key] as Map?;
+      required(key, choice?['name'] as String?, 255);
+      if (choice?['status'] != 'accepted' ||
+          choice?['id'] == null ||
+          choice?['reference_revision'] == null) {
+        fieldErrors[key] = 'Выберите название из списка';
+      }
     }
     required('type', type, 255);
     if (type != null && !capturePlaceTypes.containsKey(type)) {
@@ -331,7 +333,7 @@ class CaptureController extends ChangeNotifier {
     } catch (_) {
       if (generation != _lookupGeneration || frozen || !authenticated) return;
       suggestionError =
-          'Подсказки недоступны. Введите обязательные названия вручную.';
+          'Подсказки недоступны. Выберите обязательные названия из списка.';
     }
     notifyListeners();
   }
@@ -421,16 +423,23 @@ class CaptureController extends ChangeNotifier {
     await chooseAddress(key, 'accepted', reference: proposed);
   }
 
-  Future<List<Map<String, dynamic>>> searchAddress(
+  Future<Map<String, dynamic>> searchAddress(
     String kind,
-    String query,
-  ) async {
-    if (!authenticated || !collectionAvailable) return [];
+    String query, {
+    int page = 1,
+  }) async {
+    if (!authenticated || !collectionAvailable) {
+      throw StateError('Сессия завершена');
+    }
     final session = sessionGeneration;
-    final params = Uri(queryParameters: {'q': query}).query;
-    final rows = await api.get('geography/$kind?$params') as List;
-    if (!authenticated || session != sessionGeneration) return [];
-    return rows.map((r) => Map<String, dynamic>.from(r as Map)).toList();
+    final params = Uri(
+      queryParameters: {'q': query, 'page': '$page', 'per_page': '100'},
+    ).query;
+    final result = await api.getPage('geography/$kind?$params');
+    if (!authenticated || session != sessionGeneration) {
+      throw StateError('Сессия завершена');
+    }
+    return result;
   }
 
   Future<void> chooseAddress(

@@ -107,8 +107,18 @@ void main() {
     await c.save({
       'houseNumber': '12А',
       'addressChoices': {
-        'mahalla': {'name': 'Махалля'},
-        'street': {'name': 'Улица'},
+        'mahalla': {
+          'name': 'Махалля',
+          'status': 'accepted',
+          'id': 'm',
+          'reference_revision': 1,
+        },
+        'street': {
+          'name': 'Улица',
+          'status': 'accepted',
+          'id': 's',
+          'reference_revision': 1,
+        },
       },
       'file': 'photo',
       'fix': {
