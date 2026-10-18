@@ -198,6 +198,7 @@ class CaptureController extends ChangeNotifier {
     mapMessage = null;
     mapLoading = false;
     _mapRequest = null;
+    if (status == 'Получение координат…') status = '';
   }
 
   List<Map<String, dynamic>> recentObjects = [];
@@ -676,6 +677,7 @@ class CaptureController extends ChangeNotifier {
     if (frozen) {
       return;
     }
+    final session = sessionGeneration;
     final photo = await device.photo(recover: recover);
     if (photo == null) {
       return;
@@ -699,12 +701,20 @@ class CaptureController extends ChangeNotifier {
     if (format!.decodeFrame(0) == null) {
       throw StateError('Повреждённое фото. Повторите съёмку.');
     }
+    if (session != sessionGeneration || frozen) return;
     final dir = await getApplicationSupportDirectory();
     final f = File('${dir.path}/${const Uuid().v4()}.capture');
     await f.writeAsBytes(bytes, flush: true);
     try {
+      if (session != sessionGeneration || frozen) {
+        await f.delete();
+        return;
+      }
       await save({
         ...?draft,
+        'fix': null,
+        'approximate': null,
+        'addressChoices': manualChoices(),
         'file': f.path,
         'captured_at': DateTime.fromMillisecondsSinceEpoch(
           DateTime.now().millisecondsSinceEpoch ~/ 1000 * 1000,
@@ -717,6 +727,21 @@ class CaptureController extends ChangeNotifier {
       await f.delete();
       rethrow;
     }
+    ++_lookupGeneration;
+    suggestions = null;
+    suggestionError = null;
+    _suggestionFix = null;
+    _suggestionSession = null;
+    fieldErrors.remove('photo');
+    fieldErrors.remove('gps');
+    notifyListeners();
+    if (recover) {
+      status = 'Фото восстановлено. После входа нажмите «Получить свежие координаты».';
+      notifyListeners();
+      return;
+    }
+    if (session != sessionGeneration || !authenticated) return;
+    await locate();
   }
 
   Future<void> locate() async {
@@ -725,7 +750,23 @@ class CaptureController extends ChangeNotifier {
     }
     final generation = ++_lookupGeneration;
     final session = sessionGeneration;
-    final p = await device.position();
+    status = 'Получение координат…';
+    notifyListeners();
+    late Position p;
+    late bool approximate;
+    try {
+      p = await device.position();
+      if (generation != _lookupGeneration || frozen || !authenticated) return;
+      approximate = await device.approximate();
+    } catch (_) {
+      if (session != sessionGeneration || generation != _lookupGeneration) {
+        return;
+      }
+      status = '';
+      throw StateError(
+        'Не удалось получить координаты. Проверьте разрешение и геолокацию, затем нажмите «Получить свежие координаты».',
+      );
+    }
     if (session == sessionGeneration && authenticated) {
       mapPosition = p;
       mapMessage = null;
@@ -733,14 +774,14 @@ class CaptureController extends ChangeNotifier {
       notifyListeners();
     }
     if (generation != _lookupGeneration || frozen || !authenticated) return;
-    final approximate = await device.approximate();
-    if (generation != _lookupGeneration || frozen || !authenticated) return;
     await save({
       ...?draft,
       'fix': GpsFix(p.latitude, p.longitude, p.accuracy, p.timestamp).toJson(),
       'approximate': approximate,
       'addressChoices': manualChoices(),
     });
+    status = '';
+    fieldErrors.remove('gps');
     await suggest();
   }
 

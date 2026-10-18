@@ -1,6 +1,6 @@
 # Panjmap Android capture
 
-Russian field capture MVP: sign in, choose a place type, photograph an entrance, obtain foreground GPS, review and submit. Android API 24+. New places only; one recoverable draft. Includes a display-only map and recent server-created objects; no citizen records, background location or background synchronization.
+Russian field capture MVP: sign in, choose a place type, photograph an entrance, automatically obtain fresh foreground GPS, review and submit. Android API 24+. New places only; one recoverable draft. Includes a display-only map and recent server-created objects; no citizen records, background location or background synchronization.
 
 ## Prerequisites and run
 
@@ -60,7 +60,7 @@ The backend seeder provides `mapper@example.test`, `collector@example.test`, and
 
 Tokens use Android secure storage. Capture bytes and atomically replaced draft JSON live in app-private support storage. Android backup is disabled. Camera activity destruction is handled at startup using `retrieveLostData`; the image is copied before being shown as saved, following the [image_picker lifecycle guidance](https://pub.dev/packages/image_picker). GPS uses [geolocator foreground requests](https://pub.dev/packages/geolocator).
 
-Capture failures preserve the last successful photo/fix. Before first submission, GPS must be at most two minutes old; accuracy over 30 m or approximate permission shows a warning. Photos are requested at 2048×2048, quality 85, then checked for JPEG/PNG/WebP, actual dimensions and configured server limits.
+After photo confirmation, the app saves the validated photo, clears previous GPS and automatic address selections, and shows “Получение координат…” while requesting fresh GPS. Manual address choices are preserved. If GPS fails, the photo remains saved; use “Получить свежие координаты” to retry before submission. Camera cancellation, invalid photos and photo storage failures preserve the previous draft. Android lost-photo recovery saves the photo without GPS; after sign-in, use the same GPS retry action. Before first submission, GPS must be at most two minutes old; accuracy over 30 m or approximate permission shows a warning. Photos are requested at 2048×2048, quality 85, then checked for JPEG/PNG/WebP, actual dimensions and configured server limits.
 
 Submission freezes payloads and UUIDs before any request. Separate persistent idempotency keys are used for place, entrance and photo. A single controller operation prevents double taps. On explicit retry, GET by each UUID reconciles relationships and metadata before creating anything. Reauthentication must use the original account and API origin. Completed partial records stay on the server; there are no rollback requests. The photo file hash is checked before an upload retry. Do not clear app data or uninstall to recover a failed submission; provide the displayed UUIDs to an administrator.
 
@@ -99,7 +99,7 @@ Final results (2026-10-17): `flutter analyze` reports no issues; all 11 Flutter 
 Кнопка «Добавить новый объект» справа внизу открывает форму или текущий черновик.
 Назад возвращает на карту, сохраняя введённые значения и состояние отправки.
 В форме карта закреплена над прокручиваемыми полями. Координаты карты служат
-только для отображения: для отправки по-прежнему требуется «Получить свежие координаты».
+только для отображения: координаты для отправки получаются автоматически после подтверждения фото; для повтора доступно «Получить свежие координаты».
 При недоступном GPS карта возвращается к Пенджикенту с пояснением и настройками.
 Карта использует HTTPS-тайлы OpenStreetMap, видимую атрибуцию и встроенный HTTP-кэш
 flutter_map (без предзагрузки и массового скачивания); доступность тайлов не гарантируется.
