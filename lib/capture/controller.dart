@@ -1,4 +1,8 @@
 import 'dart:io';
+import 'dart:async';
+
+import 'package:geolocator/geolocator.dart';
+
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
@@ -23,24 +27,136 @@ class CaptureController extends ChangeNotifier {
   List<Map<String, dynamic>> areas = [];
   String? account, area, type, error;
   String name = '', status = '';
-  bool busy = false, authenticated = false;
+  bool busy = false;
+  bool _authenticated = false;
+  int sessionGeneration = 0;
+  bool get authenticated => _authenticated;
+  set authenticated(bool value) {
+    if (_authenticated == value) return;
+    _authenticated = value;
+    sessionGeneration++;
+    recentObjects = [];
+    recentError = null;
+    recentLoading = false;
+    _recentRequest = null;
+    mapPosition = null;
+    mapMessage = null;
+    mapLoading = false;
+    _mapRequest = null;
+  }
+
+  List<Map<String, dynamic>> recentObjects = [];
+  bool recentLoading = false;
+  String? recentError;
+  Future<void>? _recentRequest;
+
+  Future<void> refreshRecentObjects() {
+    if (!authenticated) return Future.value();
+    return _recentRequest ??= _refreshRecentObjects(sessionGeneration);
+  }
+
+  Future<void> _refreshRecentAfterCreation(int session) async {
+    // An in-flight request may have read the list before this place existed.
+    final pending = _recentRequest;
+    if (pending != null) await pending;
+    if (session != sessionGeneration || !authenticated) return;
+    await refreshRecentObjects();
+  }
+
+  Future<void> _refreshRecentObjects(int session) async {
+    recentLoading = true;
+    recentError = null;
+    notifyListeners();
+    try {
+      final rows =
+          await Future.sync(() => api.get('places/recent?limit=20')) as List;
+      if (session != sessionGeneration || !authenticated) return;
+      recentObjects = rows
+          .map((r) => Map<String, dynamic>.from(r as Map))
+          .toList();
+    } catch (e) {
+      if (session != sessionGeneration || !authenticated) return;
+      if (e is DioException && e.response?.statusCode == 401) {
+        error = message(e);
+      } else {
+        recentError = 'Не удалось загрузить объекты. Повторите попытку.';
+      }
+    } finally {
+      if (session == sessionGeneration) {
+        recentLoading = false;
+        _recentRequest = null;
+      }
+      notifyListeners();
+    }
+  }
+
+  Position? mapPosition;
+  bool mapLoading = false;
+  String? mapMessage;
+  int mapRevision = 0;
+  Future<void>? _mapRequest;
+
+  Future<void> refreshMapLocation() {
+    if (!authenticated) return Future.value();
+    return _mapRequest ??= _refreshMapLocation(sessionGeneration);
+  }
+
+  Future<void> _refreshMapLocation(int session) async {
+    mapLoading = true;
+    notifyListeners();
+    try {
+      final position = await device.position();
+      if (session != sessionGeneration || !authenticated) return;
+      mapPosition = position;
+      mapMessage = null;
+      mapRevision++;
+    } catch (e) {
+      if (session != sessionGeneration || !authenticated) return;
+      mapPosition = null;
+      mapRevision++;
+      mapMessage = e is TimeoutException
+          ? 'Не удалось получить местоположение за 30 секунд. Показан Пенджикент.'
+          : 'Местоположение недоступно. Проверьте разрешение и включите геолокацию. Показан Пенджикент.';
+    } finally {
+      if (session == sessionGeneration) {
+        mapLoading = false;
+        _mapRequest = null;
+        notifyListeners();
+      }
+    }
+  }
+
   double progress = 0;
   int _lookupGeneration = 0;
   Map<String, dynamic>? suggestions;
   String? suggestionError;
+  Map<String, dynamic>? _suggestionFix;
+  String? _suggestionArea;
 
   Future<void> changeArea(String? value) async {
     if (frozen || area == value) return;
     area = value;
     _lookupGeneration++;
     suggestions = null;
-    if (draft != null) await save({...draft!, 'addressChoices': null});
+    if (draft != null) {
+      await save({
+        ...draft!,
+        'addressChoices': manualChoices(),
+        'addressArea': area,
+      });
+    }
     await suggest();
   }
 
   Future<void> suggest() async {
     if (frozen || area == null || draft?['fix'] == null) return;
     final generation = ++_lookupGeneration;
+    await save({
+      ...draft!,
+      'addressChoices': manualChoices(),
+      'addressArea': area,
+    });
+    if (generation != _lookupGeneration || frozen) return;
     final fix = Map<String, dynamic>.from(draft!['fix'] as Map);
     final lookupArea = area;
     suggestions = null;
@@ -59,13 +175,106 @@ class CaptureController extends ChangeNotifier {
       if (generation != _lookupGeneration || frozen || area != lookupArea) {
         return;
       }
+      if (!_deepEqual(draft?['fix'], fix)) return;
       suggestions = Map<String, dynamic>.from(result as Map);
+      _suggestionFix = fix;
+      _suggestionArea = lookupArea;
+      final choices = manualChoices();
+      for (final key in ['mahalla', 'street']) {
+        final candidate = reliableSuggestion(key);
+        if (!choices.containsKey(key) && candidate != null) {
+          choices[key] = referenceChoice(candidate, 'automatic');
+        }
+      }
+      await save({...draft!, 'addressChoices': choices, 'addressArea': area});
     } catch (_) {
       if (generation != _lookupGeneration || frozen) return;
-      suggestionError =
-          'Подсказки недоступны. Выберите вручную или укажите «Неизвестно».';
+      suggestionError = 'Подсказки недоступны. Введите название вручную или оставьте поле пустым.';
     }
     notifyListeners();
+  }
+
+  Map<String, dynamic> manualChoices() => {
+    for (final entry in (draft?['addressChoices'] as Map? ?? {}).entries)
+      if ((entry.value as Map)['provenance'] != 'automatic')
+        entry.key as String: entry.value,
+  };
+
+  Map<String, dynamic> referenceChoice(Map reference, String provenance) => {
+    'status': 'accepted',
+    'provenance': provenance,
+    'name': reference['name'],
+    'id': reference['id'],
+    'reference_revision': reference['revision'],
+    'selected_name': reference['name'],
+  };
+
+  Map<String, dynamic>? reliableSuggestion(String key) {
+    if (_suggestionArea != area || !_deepEqual(_suggestionFix, draft?['fix'])) {
+      return null;
+    }
+    final accuracy = draft?['fix']?['accuracy_m'];
+    if (draft?['approximate'] == true ||
+        accuracy is! num ||
+        !accuracy.isFinite ||
+        accuracy < 0 ||
+        accuracy > 30) {
+      return null;
+    }
+    final data = suggestions;
+    if (data == null) return null;
+    final reasons = data['ambiguity_reasons'] as List? ?? [];
+    final candidates =
+        (data[key == 'mahalla' ? 'mahallas' : 'streets'] as List? ?? [])
+            .whereType<Map>()
+            .toList();
+    final recommended = data['recommended_${key}_id'];
+    final matching = candidates.where((r) => r['id'] == recommended).toList();
+    if (recommended == null || matching.length != 1) return null;
+    final candidate = matching.single;
+    if (candidate['name'] is! String ||
+        (candidate['name'] as String).trim().isEmpty ||
+        candidate['id'].toString().trim().isEmpty ||
+        candidate['revision'] == null ||
+        candidate['revision'].toString().trim().isEmpty) {
+      return null;
+    }
+    if (key == 'mahalla') {
+      if (reasons.contains('near_mahalla_boundary') ||
+          reasons.contains('overlapping_mahallas') ||
+          candidates.where((r) => r['contains'] == true).length != 1 ||
+          candidate['contains'] != true) {
+        return null;
+      }
+    } else {
+      final distance = candidate['distance_m'];
+      final radius = data['street_radius_m'];
+      if (reasons.contains('nearby_streets') ||
+          distance is! num ||
+          radius is! num ||
+          !distance.isFinite ||
+          !radius.isFinite ||
+          distance < 0 ||
+          distance > radius ||
+          candidates.any(
+            (r) => r['distance_m'] is num && r['distance_m'] < distance,
+          )) {
+        return null;
+      }
+    }
+    return Map<String, dynamic>.from(candidate);
+  }
+
+  Future<void> replaceAddress(
+    String key,
+    Map<String, dynamic> proposed,
+    Map current,
+  ) async {
+    if (!_deepEqual((draft?['addressChoices'] as Map?)?[key], current) ||
+        !_deepEqual(reliableSuggestion(key), proposed)) {
+      return;
+    }
+    await chooseAddress(key, 'accepted', reference: proposed);
   }
 
   Future<List<Map<String, dynamic>>> searchAddress(
@@ -96,6 +305,7 @@ class CaptureController extends ChangeNotifier {
     );
     choices[key] = {
       'status': status,
+      'provenance': 'manual',
       if (status != 'unknown')
         'name': status == 'accepted' ? reference!['name'] : name!.trim(),
       if (reference != null && status != 'unknown') ...{
@@ -110,11 +320,6 @@ class CaptureController extends ChangeNotifier {
 
   Map<String, dynamic> addressPayload(Map<String, dynamic> fix) {
     final choices = draft?['addressChoices'] as Map?;
-    if (draft?['addressArea'] != area ||
-        choices?['mahalla'] == null ||
-        choices?['street'] == null) {
-      throw StateError('Подтвердите махаллю и улицу или укажите «Неизвестно».');
-    }
     final metadata = <String, dynamic>{
       'lookup': {
         'latitude': fix['latitude'],
@@ -124,7 +329,7 @@ class CaptureController extends ChangeNotifier {
     };
     final payload = <String, dynamic>{};
     for (final key in ['mahalla', 'street']) {
-      final choice = choices![key] as Map;
+      final choice = choices?[key] as Map? ?? {'status': 'unknown'};
       payload['${key}_id'] = choice['id'];
       payload[key == 'street' ? 'street' : 'mahalla_name'] = choice['name'];
       metadata[key] = {
@@ -206,6 +411,7 @@ class CaptureController extends ChangeNotifier {
   });
   Future<void> access() async {
     final me = await api.get('auth/me');
+    if (account != me['id'] && authenticated) authenticated = false;
     account = me['id'] as String;
     config = Map<String, dynamic>.from(
       await api.get('collection-config') as Map,
@@ -234,6 +440,9 @@ class CaptureController extends ChangeNotifier {
       );
     }
     authenticated = true;
+    unawaited(refreshMapLocation());
+    unawaited(refreshRecentObjects());
+    if (!frozen) await suggest();
   }
 
   Future<void> save(Map<String, dynamic> next) async {
@@ -293,7 +502,14 @@ class CaptureController extends ChangeNotifier {
       return;
     }
     final generation = ++_lookupGeneration;
+    final session = sessionGeneration;
     final p = await device.position();
+    if (session == sessionGeneration && authenticated) {
+      mapPosition = p;
+      mapMessage = null;
+      mapRevision++;
+      notifyListeners();
+    }
     if (generation != _lookupGeneration || frozen) return;
     final approximate = await device.approximate();
     if (generation != _lookupGeneration || frozen) return;
@@ -301,7 +517,8 @@ class CaptureController extends ChangeNotifier {
       ...?draft,
       'fix': GpsFix(p.latitude, p.longitude, p.accuracy, p.timestamp).toJson(),
       'approximate': approximate,
-      'addressChoices': null,
+      'addressChoices': manualChoices(),
+      'addressArea': area,
     });
     await suggest();
   }
@@ -443,6 +660,9 @@ class CaptureController extends ChangeNotifier {
             await api.get('$path/${payload['id']}') as Map,
           );
         }
+      }
+      if (stage == 'place') {
+        unawaited(_refreshRecentAfterCreation(sessionGeneration));
       }
       for (final key in payload.keys) {
         final expected = payload[key], actual = found[key];

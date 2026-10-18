@@ -34,6 +34,29 @@ class Device implements CaptureDevice {
   Future<bool> approximate() async => true;
 }
 
+class MapDevice extends Device {
+  final gate = Completer<Position>();
+  int calls = 0;
+  @override
+  Future<Position> position() {
+    calls++;
+    return gate.future;
+  }
+}
+
+Position mapFix() => Position(
+  latitude: 39.51,
+  longitude: 67.62,
+  timestamp: DateTime.now(),
+  accuracy: 8,
+  altitude: 0,
+  altitudeAccuracy: 0,
+  heading: 0,
+  headingAccuracy: 0,
+  speed: 0,
+  speedAccuracy: 0,
+);
+
 void main() {
   late MemoryStore store;
   late CaptureController c;
@@ -105,4 +128,56 @@ void main() {
     await c.submit();
     expect(c.error, contains('исходным'));
   });
+  test(
+    'Map requests coalesce and never alter draft or submission state',
+    () async {
+      final device = MapDevice();
+      final controller = CaptureController(c.api, store, device)
+        ..authenticated = true;
+      await controller.save({
+        'place': {'id': 'frozen'},
+        'photoDone': true,
+      });
+      final draft = controller.draft;
+      final first = controller.refreshMapLocation();
+      final second = controller.refreshMapLocation();
+      expect(device.calls, 1);
+      expect(controller.busy, false);
+      device.gate.complete(mapFix());
+      await Future.wait([first, second]);
+      expect(controller.mapPosition!.latitude, 39.51);
+      expect(controller.mapLoading, false);
+      expect(controller.draft, same(draft));
+      expect(controller.complete, true);
+      expect(controller.error, isNull);
+    },
+  );
+  test('Expired session ignores pending map fix', () async {
+    final device = MapDevice();
+    final controller = CaptureController(c.api, store, device)
+      ..authenticated = true;
+    final request = controller.refreshMapLocation();
+    controller.authenticated = false;
+    controller.authenticated = true;
+    device.gate.complete(mapFix());
+    await request;
+    expect(controller.mapPosition, isNull);
+    expect(controller.mapLoading, false);
+  });
+  test(
+    'Map failure clears pin while preserving saved GPS and errors',
+    () async {
+      c.authenticated = true;
+      c.mapPosition = mapFix();
+      c.error = 'existing';
+      await c.save({
+        'fix': {'latitude': 1},
+      });
+      await c.refreshMapLocation();
+      expect(c.mapPosition, isNull);
+      expect(c.mapMessage, contains('30 секунд'));
+      expect(c.error, 'existing');
+      expect(c.draft!['fix']['latitude'], 1);
+    },
+  );
 }

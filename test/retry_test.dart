@@ -10,8 +10,16 @@ class Server extends CaptureApi {
   final records = <String, Map<String, dynamic>>{};
   final writes = <String>[];
   bool lose = true;
+  int recentReads = 0;
   @override
   Future<dynamic> get(String path) async {
+    if (path == 'places/recent?limit=20') {
+      recentReads++;
+      return records.entries
+          .where((e) => e.key.startsWith('places/'))
+          .map((e) => e.value)
+          .toList();
+    }
     if (records.containsKey(path)) {
       return records[path];
     }
@@ -77,6 +85,8 @@ void main() {
       expect(restored.draft!['placeDone'], true);
       expect(restored.draft!['entranceDone'], true);
       expect(restored.draft!['photoId'], 'f');
+      expect(server.recentReads, 1);
+      expect(restored.recentObjects.single['id'], 'p');
     },
   );
   test('Inconsistent UUID stops before another write', () async {
