@@ -11,6 +11,7 @@ import 'package:geolocator/geolocator.dart';
 
 import 'capture/controller.dart';
 import 'capture/services.dart';
+import 'capture/models.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -64,7 +65,72 @@ class CaptureScreen extends StatefulWidget {
 
 class _CaptureScreenState extends State<CaptureScreen> {
   final email = TextEditingController(), password = TextEditingController();
-  final name = TextEditingController();
+  final fields = {
+    for (final key in ['mahalla', 'street', 'houseNumber', 'entranceNumber'])
+      key: TextEditingController(),
+  };
+  final anchors = {
+    for (final key in [
+      'area',
+      'mahalla',
+      'street',
+      'type',
+      'entranceNumber',
+      'houseNumber',
+      'photo',
+      'gps',
+    ])
+      key: GlobalKey(),
+  };
+
+  Widget input(String key, String label, int limit, {bool numeric = false}) =>
+      Padding(
+        key: anchors[key],
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: TextField(
+          controller: fields[key],
+          enabled: !c.busy,
+          maxLength: limit,
+          keyboardType: numeric ? TextInputType.number : TextInputType.text,
+          decoration: InputDecoration(
+            labelText: label,
+            errorText: c.fieldErrors[key],
+          ),
+          onChanged: (v) {
+            final work = key == 'mahalla' || key == 'street'
+                ? c.chooseAddress(
+                    key,
+                    v.trim().isEmpty ? 'unknown' : 'corrected',
+                    name: v,
+                  )
+                : c.editField(key, v);
+            unawaited(
+              work.catchError((Object e) {
+                c.error = c.message(e);
+                update();
+              }),
+            );
+          },
+        ),
+      );
+
+  Future<void> submit() async {
+    if (!c.frozen && !c.validateFields()) {
+      final key = anchors.keys.firstWhere(c.fieldErrors.containsKey);
+      setState(() {});
+      await WidgetsBinding.instance.endOfFrame;
+      final target = anchors[key]!.currentContext;
+      if (target != null && target.mounted) {
+        await Scrollable.ensureVisible(
+          target,
+          duration: const Duration(milliseconds: 250),
+        );
+      }
+      return;
+    }
+    await c.submit();
+  }
+
   bool formOpen = false;
   int session = -1;
 
@@ -83,13 +149,28 @@ class _CaptureScreenState extends State<CaptureScreen> {
   @override
   void initState() {
     super.initState();
-    name.text = c.name;
+    syncFields();
     session = c.sessionGeneration;
     c.addListener(update);
     c.initialize();
   }
 
+  void syncFields() {
+    for (final key in fields.keys) {
+      final value = key == 'mahalla' || key == 'street'
+          ? (c.draft?['addressChoices'] as Map?)?[key]?['name'] as String? ?? ''
+          : c.draft?[key] as String? ?? '';
+      if (fields[key]!.text != value) {
+        fields[key]!.value = TextEditingValue(
+          text: value,
+          selection: TextSelection.collapsed(offset: value.length),
+        );
+      }
+    }
+  }
+
   void update() {
+    syncFields();
     if (mounted) {
       setState(() {
         if (session != c.sessionGeneration || !c.authenticated) {
@@ -103,7 +184,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
   @override
   void dispose() {
     c.removeListener(update);
-    name.dispose();
+    for (final field in fields.values) {
+      field.dispose();
+    }
     email.dispose();
     password.dispose();
     super.dispose();
@@ -117,23 +200,19 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final choice = (c.draft?['addressChoices'] as Map?)?[key] as Map?;
     final candidates = c.suggestions?[kind] as List? ?? [];
     final proposed = c.reliableSuggestion(key);
-    return Card(
+    return SizedBox(
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              '$label: ${choice == null
-                  ? '—'
-                  : choice['status'] == 'unknown'
-                  ? '—'
-                  : choice['name']}',
-            ),
+            input(key, label, 255),
             if (choice?['provenance'] == 'automatic')
               const Text('Заполнено автоматически'),
             if (choice == null || choice['status'] == 'unknown')
-              const Text('Введите название вручную или оставьте поле пустым.'),
+              const Text(
+                'Обязательное поле. Введите название или выберите из справочника.',
+              ),
             if (choice != null &&
                 choice['provenance'] != 'automatic' &&
                 proposed != null &&
@@ -177,10 +256,6 @@ class _CaptureScreenState extends State<CaptureScreen> {
                       ? null
                       : () => searchAddress(key, label, kind),
                   child: const Text('Найти другой'),
-                ),
-                TextButton(
-                  onPressed: c.busy ? null : () => correctAddress(key, label),
-                  child: const Text('Ввести название'),
                 ),
                 TextButton(
                   onPressed: c.busy
@@ -244,50 +319,6 @@ class _CaptureScreenState extends State<CaptureScreen> {
         return;
       }
       await c.run(() => c.chooseAddress(key, 'accepted', reference: proposed));
-    }
-  }
-
-  Future<void> correctAddress(String key, String label) async {
-    final field = TextEditingController(
-      text:
-          ((c.draft?['addressChoices'] as Map?)?[key] as Map?)?['name']
-              as String? ??
-          '',
-    );
-    final route = DialogRoute<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(label),
-        content: TextField(
-          controller: field,
-          maxLength: 255,
-          decoration: const InputDecoration(labelText: 'Исправленное название'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Отмена'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context, field.text.trim());
-            },
-            child: const Text('Применить'),
-          ),
-        ],
-      ),
-    );
-    final value = await Navigator.of(context).push(route);
-    await route.completed;
-    field.dispose();
-    if (value != null) {
-      await c.run(
-        () => c.chooseAddress(
-          key,
-          value.isEmpty ? 'unknown' : 'corrected',
-          name: value,
-        ),
-      );
     }
   }
 
@@ -357,21 +388,19 @@ class _CaptureScreenState extends State<CaptureScreen> {
     await route.completed;
     field.dispose();
     if (reference != null) {
-      await c.run(() => c.chooseAddress(key, 'accepted', reference: reference));
+      final current = (c.draft?['addressChoices'] as Map?)?[key] as Map?;
+      if (current != null && current['provenance'] != 'automatic') {
+        await confirmSelection(key, current, reference);
+      } else {
+        await c.run(
+          () => c.chooseAddress(key, 'accepted', reference: reference),
+        );
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final types = (c.config['enums'] as Map?)?['place_type'] as List? ?? [];
-    const labels = {
-      'private_house': 'Частный дом',
-      'apartment_building': 'Многоквартирный дом',
-      'residential_compound': 'Жилой комплекс',
-      'shop': 'Магазин',
-      'building': 'Здание',
-      'other': 'Другое',
-    };
     return PopScope(
       canPop: !formOpen,
       onPopInvokedWithResult: (didPop, result) {
@@ -444,172 +473,216 @@ class _CaptureScreenState extends State<CaptureScreen> {
                         child: ListView(
                           padding: const EdgeInsets.all(20),
                           children: [
-                            if (!c.authenticated ||
-                                c.error?.contains('Сессия') == true) ...[
-                              TextField(
-                                controller: email,
-                                decoration: const InputDecoration(
-                                  labelText: 'Электронная почта',
-                                ),
-                                keyboardType: TextInputType.emailAddress,
-                              ),
-                              const SizedBox(height: 12),
-                              TextField(
-                                controller: password,
-                                decoration: const InputDecoration(
-                                  labelText: 'Пароль',
-                                ),
-                                obscureText: true,
-                              ),
-                              button('Войти', () async {
-                                await c.login(email.text.trim(), password.text);
-                                password.clear();
-                              }),
-                            ] else ...[
-                              TextButton(
-                                onPressed: c.busy
-                                    ? null
-                                    : () => setState(
-                                        () => c.authenticated = false,
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                if (!c.authenticated ||
+                                    c.error?.contains('Сессия') == true) ...[
+                                  TextField(
+                                    controller: email,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Электронная почта',
+                                    ),
+                                    keyboardType: TextInputType.emailAddress,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  TextField(
+                                    controller: password,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Пароль',
+                                    ),
+                                    obscureText: true,
+                                  ),
+                                  button('Войти', () async {
+                                    await c.login(
+                                      email.text.trim(),
+                                      password.text,
+                                    );
+                                    password.clear();
+                                  }),
+                                ] else ...[
+                                  if (!c.frozen) ...[
+                                    DropdownButtonFormField<String>(
+                                      key: anchors['area'],
+                                      initialValue: c.area,
+                                      decoration: InputDecoration(
+                                        errorText: c.fieldErrors['area'],
+                                        labelText: 'Участок сбора',
                                       ),
-                                child: const Text('Войти повторно'),
-                              ),
-                              if (!c.frozen) ...[
-                                DropdownButtonFormField<String>(
-                                  initialValue: c.area,
-                                  decoration: const InputDecoration(
-                                    labelText: 'Участок сбора',
+                                      items: c.areas
+                                          .map(
+                                            (a) => DropdownMenuItem(
+                                              value:
+                                                  a['collection_area_id']
+                                                      as String,
+                                              child: Text('${a['name']}'),
+                                            ),
+                                          )
+                                          .toList(),
+                                      onChanged: c.busy
+                                          ? null
+                                          : (v) => c.run(() => c.changeArea(v)),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    addressReview(
+                                      'mahalla',
+                                      'Махалля',
+                                      'mahallas',
+                                    ),
+                                    addressReview('street', 'Улица', 'streets'),
+                                    DropdownButtonFormField<String>(
+                                      key: anchors['type'],
+                                      isExpanded: true,
+                                      itemHeight: null,
+                                      selectedItemBuilder: (context) =>
+                                          capturePlaceTypes.values
+                                              .map(
+                                                (label) => Align(
+                                                  alignment:
+                                                      Alignment.centerLeft,
+                                                  child: Text(
+                                                    label,
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                              )
+                                              .toList(),
+                                      initialValue:
+                                          capturePlaceTypes.containsKey(c.type)
+                                          ? c.type
+                                          : null,
+                                      decoration: InputDecoration(
+                                        errorText: c.fieldErrors['type'],
+                                        labelText: 'Тип здания или объекта',
+                                      ),
+                                      items: capturePlaceTypes.keys
+                                          .map(
+                                            (t) => DropdownMenuItem(
+                                              value: t,
+                                              child: Text(
+                                                capturePlaceTypes[t]!,
+                                              ),
+                                            ),
+                                          )
+                                          .toList(),
+                                      onChanged: c.busy
+                                          ? null
+                                          : (v) => c.run(
+                                              () => c.editField('type', v!),
+                                            ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    if (c.type == 'apartment_building')
+                                      input(
+                                        'entranceNumber',
+                                        'Подъезд',
+                                        100,
+                                        numeric: true,
+                                      ),
+                                    input('houseNumber', 'Номер адреса', 80),
+                                    Text('Фото входа', key: anchors['photo']),
+                                    if (c.fieldErrors['photo'] != null)
+                                      Text(c.fieldErrors['photo']!),
+                                    button(
+                                      'Сфотографировать вход',
+                                      () => c.run(() => c.capture()),
+                                    ),
+                                  ],
+                                  if (c.draft?['file'] != null)
+                                    Image.file(
+                                      File(c.draft!['file'] as String),
+                                      height: 240,
+                                      errorBuilder: (_, e, s) => const Text(
+                                        'Файл фото недоступен. Обратитесь к администратору.',
+                                      ),
+                                    ),
+                                  Text('GPS-координаты', key: anchors['gps']),
+                                  if (c.fieldErrors['gps'] != null)
+                                    Text(c.fieldErrors['gps']!),
+                                  if (c.draft?['fix'] == null)
+                                    const SelectableText('Широта: \nДолгота: '),
+                                  if (!c.frozen)
+                                    button(
+                                      'Получить свежие координаты',
+                                      () => c.run(c.locate),
+                                    ),
+                                  if (c.draft?['fix'] != null)
+                                    SelectableText(
+                                      'Широта: ${c.draft!['fix']['latitude']}\nДолгота: ${c.draft!['fix']['longitude']}\nТочность: ${c.draft!['fix']['accuracy_m']} м\nВремя UTC: ${c.draft!['fix']['fix_time']}',
+                                    ),
+                                  if (c.draft?['approximate'] == true ||
+                                      ((c.draft?['fix']?['accuracy_m']
+                                                  as num?) ??
+                                              0) >
+                                          30)
+                                    const Text(
+                                      'Внимание: приблизительное местоположение или точность хуже 30 м.',
+                                    ),
+                                  if (!c.frozen && c.draft?['fix'] != null) ...[
+                                    if (c.suggestionError != null)
+                                      Text(c.suggestionError!),
+                                    if ((c.suggestions?['ambiguity_reasons']
+                                                as List? ??
+                                            [])
+                                        .isNotEmpty)
+                                      const Text(
+                                        'Адрес неоднозначен: рядом граница, пересечение махаллей или несколько улиц. Проверьте выбор.',
+                                      ),
+                                    button(
+                                      'Повторить подсказки',
+                                      () => c.run(c.suggest),
+                                    ),
+                                  ],
+                                  if (c.frozen)
+                                    SelectableText(
+                                      'Объект: ${c.draft!['place']['id']}\nВход: ${c.draft!['entrance']['id']}\nФото: ${c.draft!['photoId']}',
+                                    ),
+                                  if (!c.complete)
+                                    button(
+                                      c.frozen
+                                          ? 'Повторить / продолжить отправку'
+                                          : 'Проверено — отправить',
+                                      submit,
+                                    ),
+                                  if (c.complete) ...[
+                                    button(
+                                      'Проверить обработку',
+                                      () => c.run(c.poll),
+                                    ),
+                                    button('Начать следующую запись', c.next),
+                                  ],
+                                ],
+                                if (c.busy)
+                                  LinearProgressIndicator(
+                                    value: c.progress > 0 && c.progress < 1
+                                        ? c.progress
+                                        : null,
                                   ),
-                                  items: c.areas
-                                      .map(
-                                        (a) => DropdownMenuItem(
-                                          value:
-                                              a['collection_area_id'] as String,
-                                          child: Text('${a['name']}'),
-                                        ),
-                                      )
-                                      .toList(),
-                                  onChanged: c.busy
-                                      ? null
-                                      : (v) => c.run(() => c.changeArea(v)),
-                                ),
-                                const SizedBox(height: 12),
-                                DropdownButtonFormField<String>(
-                                  initialValue: c.type,
-                                  decoration: const InputDecoration(
-                                    labelText: 'Тип объекта',
+                                if (c.authenticated)
+                                  MapLocationNotice(controller: c),
+                                Text(c.status),
+                                if (c.error != null) ...[
+                                  Text(
+                                    c.error!,
+                                    style: TextStyle(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .error,
+                                    ),
                                   ),
-                                  items: types
-                                      .map(
-                                        (t) => DropdownMenuItem(
-                                          value: '$t',
-                                          child: Text(labels[t] ?? '$t'),
-                                        ),
-                                      )
-                                      .toList(),
-                                  onChanged: c.busy
-                                      ? null
-                                      : (v) => setState(() => c.type = v),
-                                ),
-                                const SizedBox(height: 12),
-                                TextField(
-                                  decoration: const InputDecoration(
-                                    labelText: 'Название (необязательно)',
+                                  TextButton(
+                                    onPressed: Geolocator.openAppSettings,
+                                    child: const Text('Настройки приложения'),
                                   ),
-                                  controller: name,
-                                  onChanged: (v) => c.name = v,
-                                  maxLength: 255,
-                                  enabled: !c.busy,
-                                ),
-                                button(
-                                  'Сфотографировать вход',
-                                  () => c.run(() => c.capture()),
-                                ),
-                                button(
-                                  'Получить свежие координаты',
-                                  () => c.run(c.locate),
-                                ),
+                                  TextButton(
+                                    onPressed: Geolocator.openLocationSettings,
+                                    child: const Text('Настройки геолокации'),
+                                  ),
+                                ],
                               ],
-                              if (c.draft?['file'] != null)
-                                Image.file(
-                                  File(c.draft!['file'] as String),
-                                  height: 240,
-                                  errorBuilder: (_, e, s) => const Text(
-                                    'Файл фото недоступен. Обратитесь к администратору.',
-                                  ),
-                                ),
-                              if (c.draft?['fix'] != null)
-                                SelectableText(
-                                  'Широта: ${c.draft!['fix']['latitude']}\nДолгота: ${c.draft!['fix']['longitude']}\nТочность: ${c.draft!['fix']['accuracy_m']} м\nВремя UTC: ${c.draft!['fix']['fix_time']}',
-                                ),
-                              if (c.draft?['approximate'] == true ||
-                                  ((c.draft?['fix']?['accuracy_m'] as num?) ??
-                                          0) >
-                                      30)
-                                const Text(
-                                  'Внимание: приблизительное местоположение или точность хуже 30 м.',
-                                ),
-                              if (!c.frozen && c.draft?['fix'] != null) ...[
-                                if (c.suggestionError != null)
-                                  Text(c.suggestionError!),
-                                if ((c.suggestions?['ambiguity_reasons']
-                                            as List? ??
-                                        [])
-                                    .isNotEmpty)
-                                  const Text(
-                                    'Адрес неоднозначен: рядом граница, пересечение махаллей или несколько улиц. Проверьте выбор.',
-                                  ),
-                                addressReview('mahalla', 'Махалля', 'mahallas'),
-                                addressReview('street', 'Улица', 'streets'),
-                                button(
-                                  'Повторить подсказки',
-                                  () => c.run(c.suggest),
-                                ),
-                              ],
-                              if (c.frozen)
-                                SelectableText(
-                                  'Объект: ${c.draft!['place']['id']}\nВход: ${c.draft!['entrance']['id']}\nФото: ${c.draft!['photoId']}',
-                                ),
-                              if (!c.complete)
-                                button(
-                                  c.frozen
-                                      ? 'Повторить / продолжить отправку'
-                                      : 'Проверено — отправить',
-                                  c.submit,
-                                ),
-                              if (c.complete) ...[
-                                button(
-                                  'Проверить обработку',
-                                  () => c.run(c.poll),
-                                ),
-                                button('Начать следующую запись', c.next),
-                              ],
-                            ],
-                            if (c.busy)
-                              LinearProgressIndicator(
-                                value: c.progress > 0 && c.progress < 1
-                                    ? c.progress
-                                    : null,
-                              ),
-                            if (c.authenticated)
-                              MapLocationNotice(controller: c),
-                            Text(c.status),
-                            if (c.error != null) ...[
-                              Text(
-                                c.error!,
-                                style: TextStyle(
-                                  color: Theme.of(context).colorScheme.error,
-                                ),
-                              ),
-                              TextButton(
-                                onPressed: Geolocator.openAppSettings,
-                                child: const Text('Настройки приложения'),
-                              ),
-                              TextButton(
-                                onPressed: Geolocator.openLocationSettings,
-                                child: const Text('Настройки геолокации'),
-                              ),
-                            ],
+                            ),
                           ],
                         ),
                       ),

@@ -26,7 +26,52 @@ class CaptureController extends ChangeNotifier {
   Map<String, dynamic> config = {};
   List<Map<String, dynamic>> areas = [];
   String? account, area, type, error;
-  String name = '', status = '';
+  String status = '';
+  String get houseNumber => draft?['houseNumber'] as String? ?? '';
+  String get entranceNumber => draft?['entranceNumber'] as String? ?? '';
+  final fieldErrors = <String, String>{};
+  Future<void> _writes = Future.value();
+
+  Future<void> editField(String key, String value) async {
+    if (frozen) return;
+    fieldErrors.remove(key);
+    if (key == 'type') type = value;
+    await save({...?draft, key: value});
+    notifyListeners();
+  }
+
+  bool validateFields() {
+    fieldErrors.clear();
+    void required(String key, String? value, int limit) {
+      if (value == null || value.trim().isEmpty) {
+        fieldErrors[key] = 'Обязательное поле';
+      } else if (value.trim().length > limit) {
+        fieldErrors[key] = 'Не более $limit символов';
+      }
+    }
+
+    required('area', area, 255);
+    for (final key in ['mahalla', 'street']) {
+      required(
+        key,
+        (draft?['addressChoices'] as Map?)?[key]?['name'] as String?,
+        255,
+      );
+    }
+    required('type', type, 255);
+    if (type != null && !capturePlaceTypes.containsKey(type)) {
+      fieldErrors['type'] = 'Выберите тип';
+    }
+    if (type == 'apartment_building') {
+      required('entranceNumber', entranceNumber, 100);
+    }
+    required('houseNumber', houseNumber, 80);
+    if (draft?['file'] == null) fieldErrors['photo'] = 'Сфотографируйте вход';
+    if (draft?['fix'] == null) fieldErrors['gps'] = 'Получите координаты';
+    notifyListeners();
+    return fieldErrors.isEmpty;
+  }
+
   bool busy = false;
   bool _authenticated = false;
   int sessionGeneration = 0;
@@ -138,13 +183,12 @@ class CaptureController extends ChangeNotifier {
     area = value;
     _lookupGeneration++;
     suggestions = null;
-    if (draft != null) {
-      await save({
-        ...draft!,
-        'addressChoices': manualChoices(),
-        'addressArea': area,
-      });
-    }
+    fieldErrors.remove('area');
+    await save({
+      ...?draft,
+      'addressChoices': manualChoices(),
+      'addressArea': area,
+    });
     await suggest();
   }
 
@@ -186,10 +230,11 @@ class CaptureController extends ChangeNotifier {
           choices[key] = referenceChoice(candidate, 'automatic');
         }
       }
-      await save({...draft!, 'addressChoices': choices, 'addressArea': area});
+      await save({...?draft, 'addressChoices': choices, 'addressArea': area});
     } catch (_) {
       if (generation != _lookupGeneration || frozen) return;
-      suggestionError = 'Подсказки недоступны. Введите название вручную или оставьте поле пустым.';
+      suggestionError =
+          'Подсказки недоступны. Введите обязательные названия вручную.';
     }
     notifyListeners();
   }
@@ -296,7 +341,7 @@ class CaptureController extends ChangeNotifier {
     Map<String, dynamic>? reference,
     String? name,
   }) async {
-    if (frozen || draft?['fix'] == null) return;
+    if (frozen) return;
     if (status == 'corrected' && (name == null || name.trim().isEmpty)) {
       throw StateError('Введите название.');
     }
@@ -307,14 +352,15 @@ class CaptureController extends ChangeNotifier {
       'status': status,
       'provenance': 'manual',
       if (status != 'unknown')
-        'name': status == 'accepted' ? reference!['name'] : name!.trim(),
+        'name': status == 'accepted' ? reference!['name'] : name!,
       if (reference != null && status != 'unknown') ...{
         'id': reference['id'],
         'reference_revision': reference['revision'],
         'selected_name': reference['name'],
       },
     };
-    await save({...draft!, 'addressChoices': choices, 'addressArea': area});
+    fieldErrors.remove(key);
+    await save({...?draft, 'addressChoices': choices, 'addressArea': area});
     notifyListeners();
   }
 
@@ -331,7 +377,8 @@ class CaptureController extends ChangeNotifier {
     for (final key in ['mahalla', 'street']) {
       final choice = choices?[key] as Map? ?? {'status': 'unknown'};
       payload['${key}_id'] = choice['id'];
-      payload[key == 'street' ? 'street' : 'mahalla_name'] = choice['name'];
+      payload[key == 'street' ? 'street' : 'mahalla_name'] =
+          (choice['name'] as String?)?.trim();
       metadata[key] = {
         'status': choice['status'],
         if (choice['reference_revision'] != null)
@@ -387,6 +434,7 @@ class CaptureController extends ChangeNotifier {
 
   Future<void> initialize() => run(() async {
     draft = await store.read();
+    type = draft?['type'] as String?;
     if (!frozen) {
       await capture(recover: true);
     }
@@ -446,8 +494,16 @@ class CaptureController extends ChangeNotifier {
   }
 
   Future<void> save(Map<String, dynamic> next) async {
-    await store.write(next);
+    final previous = draft;
     draft = next;
+    final write = _writes.then((_) => store.write(next));
+    _writes = write.catchError((Object _) {});
+    try {
+      await write;
+    } catch (_) {
+      if (identical(draft, next)) draft = previous;
+      rethrow;
+    }
   }
 
   Future<void> capture({bool recover = false}) async {
@@ -528,6 +584,7 @@ class CaptureController extends ChangeNotifier {
       throw StateError('Войдите в систему.');
     }
     if (!frozen) {
+      if (!validateFields()) throw StateError('Заполните обязательные поля.');
       if (area == null ||
           type == null ||
           draft?['file'] == null ||
@@ -563,13 +620,15 @@ class CaptureController extends ChangeNotifier {
           'id': place,
           'collection_area_id': area,
           'type': type,
-          'name': name.trim().isEmpty ? null : name.trim(),
+          'name': null,
+          'house_number': houseNumber.trim(),
           'source_type': 'field_observation',
           ...address,
         },
         'entrance': {
           'id': entrance,
           'place_id': place,
+          if (type == 'apartment_building') 'label': entranceNumber.trim(),
           ...fix,
           'source_type': 'field_observation',
         },
@@ -719,8 +778,11 @@ class CaptureController extends ChangeNotifier {
       return;
     }
     final path = draft!['file'] as String;
+    await _writes;
     await store.clear();
     draft = null;
+    type = null;
+    fieldErrors.clear();
     _lookupGeneration++;
     suggestions = null;
     status = '';

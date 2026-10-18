@@ -5,6 +5,7 @@ import 'dart:convert';
 
 import 'package:panjmap_capture/capture/controller.dart';
 import 'package:panjmap_capture/capture/services.dart';
+import 'package:panjmap_capture/capture/models.dart';
 
 import 'controller_test.dart' show MemoryStore, Device, mapFix;
 
@@ -40,6 +41,58 @@ class TestTiles extends TileProvider {
 }
 
 void main() {
+  testWidgets('exact field order, seven options and entrance visibility', (
+    tester,
+  ) async {
+    final c = ScreenController()..authenticated = true;
+    await c.editField('type', 'apartment_building');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: app.CaptureScreen(controller: c, tileProvider: TestTiles()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Добавить новый объект'));
+    await tester.pumpAndSettle();
+    final type = tester
+        .widgetList<DropdownButton<String>>(
+          find.byType(DropdownButton<String>),
+        )
+        .last;
+    expect(
+      type.items!.map((item) => item.value).toList(),
+      capturePlaceTypes.keys.toList(),
+    );
+    Finder field(String label) => find.byWidgetPredicate(
+      (w) => w is TextField && w.decoration?.labelText == label,
+    );
+    final order = [
+      field('Махалля'),
+      field('Улица'),
+      find.byType(DropdownButtonFormField<String>).last,
+      field('Подъезд'),
+      field('Номер адреса'),
+      find.text('Фото входа'),
+      find.text('GPS-координаты'),
+    ];
+    for (var i = 1; i < order.length; i++) {
+      expect(
+        tester.getTopLeft(order[i]).dy,
+        greaterThan(tester.getTopLeft(order[i - 1]).dy),
+      );
+    }
+    expect(find.text('Название (необязательно)'), findsNothing);
+    for (final type in capturePlaceTypes.keys) {
+      await c.editField('type', type);
+      await tester.pumpAndSettle();
+      expect(
+        field('Подъезд'),
+        type == 'apartment_building' ? findsOneWidget : findsNothing,
+      );
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   for (final size in [const Size(360, 800), const Size(800, 360)]) {
     testWidgets('Home equal split and history scroll at $size', (tester) async {
       tester.view.physicalSize = size;
@@ -122,31 +175,34 @@ void main() {
     await tester.scrollUntilVisible(
       find.text('Заполнено автоматически'),
       300,
-      scrollable: find.byType(Scrollable).last,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView).last,
+            matching: find.byType(Scrollable),
+          )
+          .first,
     );
-    expect(find.text('Махалля: Автоматическая'), findsOneWidget);
-    await tester.tap(find.text('Ввести название').first);
-    await tester.pumpAndSettle();
     expect(find.widgetWithText(TextField, 'Автоматическая'), findsOneWidget);
-    await tester.enterText(find.byType(TextField).last, 'Ручная');
-    await tester.tap(find.text('Применить'));
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Автоматическая'),
+      'Ручная',
+    );
     await tester.pumpAndSettle();
-    expect(find.text('Махалля: Ручная'), findsOneWidget);
     await tester.tap(find.text('Заменить: Автоматическая'));
     await tester.pumpAndSettle();
     expect(find.textContaining('Сейчас: Ручная'), findsOneWidget);
     await tester.tap(find.text('Отмена'));
     await tester.pumpAndSettle();
-    expect(find.text('Махалля: Ручная'), findsOneWidget);
+    expect(find.widgetWithText(TextField, 'Ручная'), findsOneWidget);
     await tester.tap(find.text('Заменить: Автоматическая'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Заменить'));
     await tester.pumpAndSettle();
-    expect(find.text('Махалля: Автоматическая'), findsOneWidget);
+    expect(find.widgetWithText(TextField, 'Автоматическая'), findsOneWidget);
     expect(c.draft!['addressChoices']['mahalla']['provenance'], 'manual');
     await tester.tap(find.text('Очистить').first);
     await tester.pumpAndSettle();
-    expect(find.text('Махалля: —'), findsOneWidget);
+    expect(find.widgetWithText(TextField, 'Махалля'), findsOneWidget);
   });
   testWidgets('Map landing, pin, Back and reopening preserve form values', (
     tester,
@@ -175,8 +231,17 @@ void main() {
     await tester.tap(find.byTooltip('Добавить новый объект'));
     await tester.pumpAndSettle();
     expect(c.mapMessage, contains('Показан Пенджикент'));
-    final name = find.widgetWithText(TextField, 'Название (необязательно)');
-    await tester.ensureVisible(name);
+    final name = find.widgetWithText(TextField, 'Номер адреса');
+    await tester.scrollUntilVisible(
+      name,
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView).last,
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     await tester.enterText(name, 'Сохранённое имя');
     await tester.tap(find.byType(BackButton));
     await tester.pumpAndSettle();

@@ -1,3 +1,18 @@
+const capturePlaceTypes = {
+  'apartment_building': 'Многоэтажный жилой дом',
+  'private_house': 'Дом',
+  'bazaar': 'Базар',
+  'shop': 'Магазин',
+  'pharmacy': 'Аптека',
+  'clinic': 'Клиника',
+  'other': 'Другое',
+};
+const placeLabels = {
+  ...capturePlaceTypes,
+  'residential_compound': 'Жилой комплекс',
+  'building': 'Здание',
+};
+
 /// A measured foreground GPS fix, serialized unchanged into an entrance request.
 class GpsFix {
   final double latitude, longitude, accuracy;

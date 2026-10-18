@@ -2,15 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'collector_map.dart';
 import 'controller.dart';
-
-const placeLabels = {
-  'private_house': 'Частный дом',
-  'apartment_building': 'Многоквартирный дом',
-  'residential_compound': 'Жилой комплекс',
-  'shop': 'Магазин',
-  'building': 'Здание',
-  'other': 'Другое',
-};
+import 'models.dart';
 
 class RecentObjects extends StatelessWidget {
   final CaptureController controller;

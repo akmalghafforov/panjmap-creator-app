@@ -106,6 +106,11 @@ void main() {
     c.area = 'area';
     c.type = 'shop';
     await c.save({
+      'houseNumber': '12А',
+      'addressChoices': {
+        'mahalla': {'name': 'Махалля'},
+        'street': {'name': 'Улица'},
+      },
       'file': 'photo',
       'fix': {
         'fix_time': DateTime.now()
