@@ -125,3 +125,9 @@ Endpoint возвращает существующие place resources в `data`
 `limit`: 1–100, по умолчанию 20; без пагинации и новых миграций.
 
 Legacy drafts lose obsolete area metadata before use. If normalization changes a frozen place payload, its replacement idempotency key is saved before network activity. Record UUIDs are retained and reconciled before writes.
+
+### Development role sign-in
+
+The app discovers sign-in modes from `GET auth/options` on startup and on returning to sign-in. A local/development backend with `DEV_ROLE_LOGIN_ENABLED=true` offers its available seeded roles without passwords. Run the backend's existing `php artisan db:seed` if no roles are available. There is no Flutter flag. Discovery failures retain password login and offer retry; older backends returning 404 use password login.
+
+Development administrators see a role-switch screen because their account cannot collect field data. Token expiry is persisted and checked while foregrounded, on resume, and during restoration; API 401 responses also return to sign-in. Reauthentication preserves drafts, photos and submission UUIDs. Recovery still requires the original backend and account, so select the same role to resume a partially submitted record. Deploy the backend first; staging/production and browser administrator authentication retain password login.

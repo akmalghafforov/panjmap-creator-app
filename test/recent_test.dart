@@ -1,4 +1,7 @@
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
 import 'dart:async';
+
 import 'package:dio/dio.dart';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -15,12 +18,20 @@ class RecentApi extends CaptureApi {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() => FlutterSecureStorage.setMockInitialValues({}));
   test('history 401 expires the session without changing the draft', () async {
     final api = RecentApi();
-    final c = CaptureController(api, MemoryStore(), Device())..authenticated = true;
+    final c = CaptureController(api, MemoryStore(), Device())
+      ..authenticated = true;
     await c.save({'saved': true});
     final load = c.refreshRecentObjects();
-    api.result.completeError(DioException(requestOptions: RequestOptions(), response: Response(requestOptions: RequestOptions(), statusCode: 401)));
+    api.result.completeError(
+      DioException(
+        requestOptions: RequestOptions(),
+        response: Response(requestOptions: RequestOptions(), statusCode: 401),
+      ),
+    );
     await load;
     expect(c.authenticated, false);
     expect(c.error, contains('Сессия истекла'));

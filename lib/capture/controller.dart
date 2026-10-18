@@ -21,7 +21,114 @@ class CaptureController extends ChangeNotifier {
   final CaptureApi api;
   final DraftStore store;
   final CaptureDevice device;
-  CaptureController(this.api, this.store, this.device);
+  CaptureController(this.api, this.store, this.device) {
+    api.dio.interceptors.add(
+      InterceptorsWrapper(
+        onError: (e, handler) {
+          if (e.response?.statusCode == 401 &&
+              e.requestOptions.headers['Authorization'] ==
+                  api.dio.options.headers['Authorization']) {
+            unawaited(endSession());
+          }
+          handler.next(e);
+        },
+      ),
+    );
+  }
+  bool developmentRoleLoginEnabled = false, optionsLoading = false;
+  String? optionsError, selectedRole;
+  List<Map<String, dynamic>> roles = [];
+  bool developmentLogin = false, collectionAvailable = true;
+  int _authRequest = 0, _optionsRequest = 0;
+  Timer? _expiryTimer;
+  DateTime? expiresAt;
+
+  Future<void> loadAuthOptions() async {
+    final request = ++_optionsRequest;
+    final auth = _authRequest;
+    optionsLoading = true;
+    optionsError = null;
+    notifyListeners();
+    try {
+      final data = await api.get('auth/options');
+      if (request != _optionsRequest || auth != _authRequest || authenticated) {
+        return;
+      }
+      developmentRoleLoginEnabled =
+          data['development_role_login_enabled'] == true;
+      roles = developmentRoleLoginEnabled
+          ? (data['roles'] as List)
+                .map((r) => Map<String, dynamic>.from(r as Map))
+                .toList()
+          : [];
+      if (!roles.any((r) => r['role'] == selectedRole)) {
+        selectedRole = roles.isEmpty ? null : roles.first['role'] as String;
+      }
+    } catch (e) {
+      if (request != _optionsRequest || auth != _authRequest || authenticated) {
+        return;
+      }
+      developmentRoleLoginEnabled = false;
+      roles = [];
+      if (e is! DioException || e.response?.statusCode != 404) {
+        optionsError = 'Не удалось проверить режим входа.';
+      }
+    } finally {
+      if (request == _optionsRequest) {
+        optionsLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> endSession() async {
+    final request = ++_authRequest;
+    authenticated = false;
+    _expiryTimer?.cancel();
+    expiresAt = null;
+    api.dio.options.headers.remove('Authorization');
+    error = 'Сессия завершена. Войдите снова; запись сохранена.';
+    notifyListeners();
+    // Queue credential mutations so a late deletion cannot erase a newer login.
+    await _credentials(() => secureTokens.delete(key: api.origin));
+    if (request == _authRequest) await loadAuthOptions();
+  }
+
+  Future<void> _credentialWrites = Future.value();
+  Future<void> _credentials(Future<void> Function() action) {
+    final write = _credentialWrites.then((_) => action());
+    _credentialWrites = write.catchError((Object _) {});
+    return write;
+  }
+
+  void checkExpiry() {
+    if (expiresAt != null && !DateTime.now().isBefore(expiresAt!)) {
+      unawaited(endSession());
+    } else if (expiresAt != null) {
+      _scheduleExpiry();
+    }
+  }
+
+  void _scheduleExpiry() {
+    _expiryTimer?.cancel();
+    if (expiresAt == null) return;
+    final delay = expiresAt!.difference(DateTime.now());
+    _expiryTimer = Timer(
+      delay.isNegative
+          ? Duration.zero
+          : delay + const Duration(milliseconds: 1),
+      checkExpiry,
+    );
+  }
+
+  @override
+  void dispose() {
+    ++_authRequest;
+    ++_optionsRequest;
+    _expiryTimer?.cancel();
+    super.dispose();
+  }
+
   Map<String, dynamic>? draft;
   Map<String, dynamic> config = {};
   String? account, type, error;
@@ -97,7 +204,7 @@ class CaptureController extends ChangeNotifier {
   Future<void>? _recentRequest;
 
   Future<void> refreshRecentObjects() {
-    if (!authenticated) return Future.value();
+    if (!authenticated || !collectionAvailable) return Future.value();
     return _recentRequest ??= _refreshRecentObjects(sessionGeneration);
   }
 
@@ -143,7 +250,7 @@ class CaptureController extends ChangeNotifier {
   Future<void>? _mapRequest;
 
   Future<void> refreshMapLocation() {
-    if (!authenticated) return Future.value();
+    if (!authenticated || !collectionAvailable) return Future.value();
     return _mapRequest ??= _refreshMapLocation(sessionGeneration);
   }
 
@@ -179,7 +286,12 @@ class CaptureController extends ChangeNotifier {
   Map<String, dynamic>? _suggestionFix;
   int? _suggestionSession;
   Future<void> suggest() async {
-    if (frozen || !authenticated || draft?['fix'] == null) return;
+    if (frozen ||
+        !authenticated ||
+        !collectionAvailable ||
+        draft?['fix'] == null) {
+      return;
+    }
     final generation = ++_lookupGeneration;
     await save({...draft!, 'addressChoices': manualChoices()});
     if (generation != _lookupGeneration || frozen || !authenticated) return;
@@ -313,7 +425,7 @@ class CaptureController extends ChangeNotifier {
     String kind,
     String query,
   ) async {
-    if (!authenticated) return [];
+    if (!authenticated || !collectionAvailable) return [];
     final session = sessionGeneration;
     final params = Uri(queryParameters: {'q': query}).query;
     final rows = await api.get('geography/$kind?$params') as List;
@@ -383,13 +495,14 @@ class CaptureController extends ChangeNotifier {
     if (busy) {
       return;
     }
+    final request = _authRequest;
     busy = true;
     error = null;
     notifyListeners();
     try {
       await work();
     } catch (e) {
-      error = message(e);
+      if (request == _authRequest) error = message(e);
     } finally {
       busy = false;
       notifyListeners();
@@ -399,7 +512,9 @@ class CaptureController extends ChangeNotifier {
   String message(Object e) {
     if (e is DioException) {
       if (e.response?.statusCode == 401) {
-        authenticated = false;
+        if (authenticated || api.dio.options.headers['Authorization'] != null) {
+          unawaited(endSession());
+        }
       }
       return switch (e.response?.statusCode) {
         401 => 'Сессия истекла. Войдите снова; запись сохранена.',
@@ -419,44 +534,96 @@ class CaptureController extends ChangeNotifier {
   }
 
   Future<void> initialize() => run(() async {
+    unawaited(loadAuthOptions());
     draft = await store.read();
     await normalizeDraft();
     type = draft?['type'] as String?;
     if (!frozen) {
       await capture(recover: true);
     }
-    final token = await secureTokens.read(key: api.origin);
-    if (complete) {
-      status = 'Запись сохранена. Проверьте обработку фото.';
-    }
-    if (token != null) {
+    final request = _authRequest;
+    final stored = await secureTokens.read(key: api.origin);
+    if (complete) status = 'Запись сохранена. Проверьте обработку фото.';
+    if (stored != null && request == _authRequest) {
+      String token = stored;
+      if (stored.startsWith('{')) {
+        final credentials = jsonDecode(stored) as Map;
+        token = credentials['token'] as String;
+        expiresAt = DateTime.tryParse(
+          credentials['expires_at'] as String? ?? '',
+        );
+      }
+      if (expiresAt != null && !DateTime.now().isBefore(expiresAt!)) {
+        await endSession();
+        return;
+      }
       api.token(token);
-      await access();
+      _scheduleExpiry();
+      await access(request: request);
     }
   });
-  Future<void> login(String email, String password) => run(() async {
-    final r = await api.post('auth/login', {
-      'email': email,
-      'password': password,
-      'device_label': 'Panjmap Android',
+  Future<void> login(String email, String password) =>
+      _signIn('auth/login', {'email': email, 'password': password});
+
+  Future<void> loginRole() =>
+      _signIn('auth/development-login', {'role': selectedRole});
+
+  Future<void> _signIn(String path, Map<String, dynamic> body) {
+    if (busy) return Future.value();
+    final request = ++_authRequest;
+    ++_optionsRequest;
+    optionsLoading = false;
+    return run(() async {
+      final r = await api.post(path, {
+        ...body,
+        'device_label': 'Panjmap Android',
+      });
+      if (request != _authRequest) return;
+      expiresAt = DateTime.tryParse(r['expires_at'] as String? ?? '');
+      api.token(r['token'] as String);
+      await _credentials(() async {
+        if (request != _authRequest) return;
+        await secureTokens.write(
+          key: api.origin,
+          value: jsonEncode({
+            'token': r['token'],
+            'expires_at': r['expires_at'],
+          }),
+        );
+      });
+      if (request != _authRequest) return;
+      _scheduleExpiry();
+      await access(request: request);
     });
-    api.token(r['token'] as String);
-    await secureTokens.write(key: api.origin, value: r['token'] as String);
-    await access();
-  });
-  Future<void> access() async {
+  }
+
+  Future<void> access({int? request}) async {
+    final generation = request ?? _authRequest;
     final me = await api.get('auth/me');
-    if (account != me['id'] && authenticated) authenticated = false;
-    account = me['id'] as String;
-    config = Map<String, dynamic>.from(
-      await api.get('collection-config') as Map,
-    );
-    if (!(me['capabilities'] as List).contains('locations')) {
+    if (generation != _authRequest) return;
+    final canCollect = (me['capabilities'] as List).contains('locations');
+    final isDevelopment = me['development_login'] == true;
+    if (!canCollect && !(isDevelopment && me['role'] == 'administrator')) {
       throw StateError(
         'Нет доступа к сбору объектов. Обратитесь к администратору.',
       );
     }
+    Map<String, dynamic> nextConfig = {};
+    if (canCollect) {
+      nextConfig = Map<String, dynamic>.from(
+        await api.get('collection-config') as Map,
+      );
+      if (generation != _authRequest) return;
+    }
+    if (account != me['id'] && authenticated) authenticated = false;
+    account = me['id'] as String;
+    developmentLogin = isDevelopment;
+    collectionAvailable = canCollect;
+    config = nextConfig;
     authenticated = true;
+    ++_optionsRequest;
+    optionsLoading = false;
+    if (!canCollect) return;
     unawaited(refreshMapLocation());
     unawaited(refreshRecentObjects());
     if (!frozen) await suggest();
@@ -568,8 +735,19 @@ class CaptureController extends ChangeNotifier {
     await suggest();
   }
 
+  void _requireSession(int session) {
+    checkExpiry();
+    if (!authenticated ||
+        !collectionAvailable ||
+        session != sessionGeneration) {
+      throw StateError('Сессия завершена. Войдите снова; запись сохранена.');
+    }
+  }
+
   Future<void> submit() => run(() async {
-    if (!authenticated) {
+    final session = sessionGeneration;
+    checkExpiry();
+    if (!authenticated || !collectionAvailable) {
       throw StateError('Войдите в систему.');
     }
     await normalizeDraft();
@@ -624,6 +802,7 @@ class CaptureController extends ChangeNotifier {
         'photoKey': uuid.v4(),
       });
     }
+    _requireSession(session);
     if (draft!['origin'] != api.origin || draft!['account'] != account) {
       throw StateError('Продолжите с исходным сервером и учётной записью.');
     }
@@ -647,6 +826,7 @@ class CaptureController extends ChangeNotifier {
       final path = isPhoto ? 'photos' : '${stage}s';
       // Persist before every network operation, including reconciliation.
       await save({...draft!});
+      _requireSession(session);
       Map<String, dynamic>? found;
       try {
         found = Map<String, dynamic>.from(
@@ -663,6 +843,7 @@ class CaptureController extends ChangeNotifier {
         );
       }
       if (found == null) {
+        _requireSession(session);
         try {
           if (isPhoto) {
             final f = File(draft!['file'] as String);
@@ -671,6 +852,7 @@ class CaptureController extends ChangeNotifier {
                     draft!['sha256']) {
               throw StateError('Файл повреждён. Обратитесь к администратору.');
             }
+            _requireSession(session);
             found = await api.post(
               'entrances/${payload['entrance_id']}/photos',
               FormData.fromMap({
@@ -701,6 +883,7 @@ class CaptureController extends ChangeNotifier {
           if (e.response?.statusCode != 409) {
             rethrow;
           }
+          _requireSession(session);
           found = Map<String, dynamic>.from(
             await api.get('$path/${payload['id']}') as Map,
           );
@@ -729,12 +912,15 @@ class CaptureController extends ChangeNotifier {
       }
       await save({...draft!, '${stage}Done': true});
     }
+    _requireSession(session);
     await poll();
   });
   Future<void> poll() async {
+    final session = sessionGeneration;
     status = 'Запись сохранена. Обработка фото';
     notifyListeners();
     for (var i = 0; i < 15; i++) {
+      _requireSession(session);
       final p = await api.get('photos/${draft!['photoId']}');
       final state = p['processing_state'];
       status = state == 'failed'

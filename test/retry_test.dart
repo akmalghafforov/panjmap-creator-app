@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:panjmap_capture/capture/controller.dart';
@@ -53,7 +56,61 @@ class Server extends CaptureApi {
   }
 }
 
+class RoleServer extends Server {
+  String role = 'mapper';
+  @override
+  Future<dynamic> get(String path) async {
+    if (path == 'auth/me') {
+      return {
+        'id': role == 'mapper' ? 'a' : 'b',
+        'role': role,
+        'development_login': true,
+        'capabilities': ['locations'],
+      };
+    }
+    if (path == 'auth/options') {
+      return {'development_role_login_enabled': true, 'roles': []};
+    }
+    if (path == 'collection-config') return <String, dynamic>{};
+    return super.get(path);
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    dynamic body, {
+    String? key,
+    ProgressCallback? progress,
+  }) async {
+    if (path == 'auth/development-login') {
+      role = (body as Map)['role'] as String;
+      return {
+        'token': 'role-token-$role',
+        'expires_at': DateTime.now()
+            .add(const Duration(hours: 1))
+            .toIso8601String(),
+      };
+    }
+    return super.post(path, body, key: key, progress: progress);
+  }
+}
+
+class PausedRecoveryServer extends RoleServer {
+  final reconciliation = Completer<dynamic>();
+  final started = Completer<void>();
+  @override
+  Future<dynamic> get(String path) {
+    if (path == 'places/p') {
+      started.complete();
+      return reconciliation.future;
+    }
+    return super.get(path);
+  }
+}
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() => FlutterSecureStorage.setMockInitialValues({}));
   test(
     'Lost create response reconciles after restart without duplicate write',
     () async {
@@ -159,4 +216,74 @@ void main() {
     expect(server.writes, isEmpty);
     expect(c.error, contains('Несовпадение'));
   });
+  test('role reauthentication preserves UUIDs and enforces original account and origin', () async {
+    final server = RoleServer(), store = MemoryStore();
+    final c = CaptureController(server, store, Device())
+      ..selectedRole = 'mapper';
+    addTearDown(c.dispose);
+    await c.loginRole();
+    await c.save({
+      'origin': server.origin,
+      'account': 'a',
+      'place': {'id': 'p', 'type': 'shop'},
+      'entrance': {'id': 'e', 'place_id': 'p'},
+      'photoId': 'f',
+      'placeKey': 'pk',
+      'entranceKey': 'ek',
+      'photoKey': 'fk',
+      'file': 'missing',
+      'size': 1,
+      'captured_at': '2026-01-01T00:00:00Z',
+    });
+    await c.submit();
+    expect(server.writes, ['places:pk']);
+    await c.endSession();
+    c.selectedRole = 'collector';
+    await c.loginRole();
+    await c.submit();
+    expect(server.writes, ['places:pk']);
+    expect(c.error, contains('исходным сервером'));
+    expect(c.draft!['photoId'], 'f');
+    expect(c.draft!['file'], 'missing');
+    await c.endSession();
+    c.selectedRole = 'mapper';
+    await c.loginRole();
+    await c.save({...c.draft!, 'origin': 'https://another.test/api/v1'});
+    await c.submit();
+    expect(server.writes, ['places:pk']);
+    await c.save({...c.draft!, 'origin': server.origin});
+    await c.submit();
+    expect(server.writes, ['places:pk', 'entrances:ek']);
+    expect(c.draft!['placeDone'], true);
+    expect(c.draft!['entranceDone'], true);
+    expect(c.draft!['placeKey'], 'pk');
+  });
+  test(
+    'ending a session during reconciliation stops subsequent requests',
+    () async {
+      final server = PausedRecoveryServer();
+      final c = CaptureController(server, MemoryStore(), Device())
+        ..authenticated = true
+        ..account = 'a';
+      addTearDown(c.dispose);
+      await c.save({
+        'origin': server.origin,
+        'account': 'a',
+        'place': {'id': 'p', 'type': 'shop'},
+        'entrance': {'id': 'e', 'place_id': 'p'},
+        'placeKey': 'pk',
+        'entranceKey': 'ek',
+        'photoId': 'f',
+      });
+      final submit = c.submit();
+      await server.started.future;
+      await c.endSession();
+      server.reconciliation.complete({'id': 'p', 'type': 'shop'});
+      await submit;
+      expect(server.writes, isEmpty);
+      expect(c.draft!['placeDone'], true);
+      expect(c.draft!['entranceDone'], isNull);
+      expect(c.draft!['place']['id'], 'p');
+    },
+  );
 }

@@ -63,7 +63,8 @@ class CaptureScreen extends StatefulWidget {
   State<CaptureScreen> createState() => _CaptureScreenState();
 }
 
-class _CaptureScreenState extends State<CaptureScreen> {
+class _CaptureScreenState extends State<CaptureScreen>
+    with WidgetsBindingObserver {
   final email = TextEditingController(), password = TextEditingController();
   final fields = {
     for (final key in ['mahalla', 'street', 'houseNumber', 'entranceNumber'])
@@ -150,8 +151,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
     super.initState();
     syncFields();
     session = c.sessionGeneration;
+    WidgetsBinding.instance.addObserver(this);
     c.addListener(update);
     c.initialize();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) c.checkExpiry();
   }
 
   void syncFields() {
@@ -182,6 +189,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     c.removeListener(update);
     for (final field in fields.values) {
       field.dispose();
@@ -193,7 +201,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
   Widget button(String label, Future<void> Function() action) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 6),
-    child: FilledButton(onPressed: c.busy ? null : action, child: Text(label)),
+    child: FilledButton(
+      onPressed: c.busy || c.optionsLoading ? null : action,
+      child: Text(label),
+    ),
   );
   Widget addressReview(String key, String label, String kind) {
     final choice = (c.draft?['addressChoices'] as Map?)?[key] as Map?;
@@ -415,7 +426,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                     onPressed: c.busy
                         ? null
                         : () => setState(() {
-                            c.authenticated = false;
+                            unawaited(c.endSession());
                             formOpen = false;
                           }),
                   ),
@@ -423,7 +434,22 @@ class _CaptureScreenState extends State<CaptureScreen> {
               : null,
         ),
         body: SafeArea(
-          child: c.authenticated && !formOpen
+          child: c.authenticated && !c.collectionAvailable
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'Вход выполнен: администратор. Сбор полевых данных недоступен для этой роли.',
+                        ),
+                        button('Сменить роль', c.endSession),
+                      ],
+                    ),
+                  ),
+                )
+              : c.authenticated && !formOpen
               ? LayoutBuilder(
                   builder: (context, constraints) => Column(
                     children: [
@@ -475,28 +501,78 @@ class _CaptureScreenState extends State<CaptureScreen> {
                               children: [
                                 if (!c.authenticated ||
                                     c.error?.contains('Сессия') == true) ...[
-                                  TextField(
-                                    controller: email,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Электронная почта',
+                                  if (c.optionsLoading)
+                                    const LinearProgressIndicator(),
+                                  if (c.developmentRoleLoginEnabled) ...[
+                                    if (c.roles.isEmpty) ...[
+                                      const Text(
+                                        'Учётные записи разработки недоступны. Запустите seeder на сервере.',
+                                      ),
+                                      button(
+                                        'Повторить проверку',
+                                        c.loadAuthOptions,
+                                      ),
+                                    ] else ...[
+                                      DropdownButtonFormField<String>(
+                                        key: ValueKey(c.selectedRole),
+                                        initialValue: c.selectedRole,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Роль',
+                                        ),
+                                        items: c.roles
+                                            .map(
+                                              (r) => DropdownMenuItem(
+                                                value: r['role'] as String,
+                                                child: Text(
+                                                  r['label'] as String,
+                                                ),
+                                              ),
+                                            )
+                                            .toList(),
+                                        onChanged: c.busy || c.optionsLoading
+                                            ? null
+                                            : (value) => setState(
+                                                () => c.selectedRole = value,
+                                              ),
+                                      ),
+                                      FilledButton(
+                                        onPressed: c.busy || c.optionsLoading
+                                            ? null
+                                            : c.loginRole,
+                                        child: const Text('Войти без пароля'),
+                                      ),
+                                    ],
+                                  ] else ...[
+                                    TextField(
+                                      controller: email,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Электронная почта',
+                                      ),
+                                      keyboardType: TextInputType.emailAddress,
                                     ),
-                                    keyboardType: TextInputType.emailAddress,
-                                  ),
-                                  const SizedBox(height: 12),
-                                  TextField(
-                                    controller: password,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Пароль',
+                                    const SizedBox(height: 12),
+                                    TextField(
+                                      controller: password,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Пароль',
+                                      ),
+                                      obscureText: true,
                                     ),
-                                    obscureText: true,
-                                  ),
-                                  button('Войти', () async {
-                                    await c.login(
-                                      email.text.trim(),
-                                      password.text,
-                                    );
-                                    password.clear();
-                                  }),
+                                    button('Войти', () async {
+                                      await c.login(
+                                        email.text.trim(),
+                                        password.text,
+                                      );
+                                      password.clear();
+                                    }),
+                                  ],
+                                  if (c.optionsError != null) ...[
+                                    Text(c.optionsError!),
+                                    button(
+                                      'Повторить проверку',
+                                      c.loadAuthOptions,
+                                    ),
+                                  ],
                                 ] else ...[
                                   if (!c.frozen) ...[
                                     addressReview(
