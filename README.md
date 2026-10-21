@@ -22,7 +22,7 @@ Create an Android Studio virtual device named `Medium_Phone` once, then run:
 make run
 ```
 
-This starts the emulator if necessary, waits for Android to boot, and runs Flutter on that specific device. An already running `Medium_Phone` is reused. Keep the backend and queue worker running separately. The default API root is `http://10.0.2.2:8000/api/v1`.
+This refreshes dependencies with `flutter pub get`, starts the emulator if necessary, waits for Android to boot, and runs Flutter on that specific device. Refreshing dependencies also repairs generated package paths after moving the project or changing the Flutter SDK or pub cache. An already running `Medium_Phone` is reused. Keep the backend and queue worker running separately. The default API root is `http://10.0.2.2:8000/api/v1`.
 
 Override configuration when needed:
 

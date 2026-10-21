@@ -16,6 +16,9 @@ for tool in "$adb" "$emulator"; do
   [[ -x "$tool" ]] || { echo "Android tool missing: $tool. Set ANDROID_HOME." >&2; exit 1; }
 done
 command -v "$flutter" >/dev/null || { echo "Flutter not found: $flutter" >&2; exit 1; }
+# Refresh generated package paths even when Flutter considers pubspec unchanged.
+# They may still point at a previous SDK or a removed dependency cache.
+"$flutter" pub get
 "$emulator" -list-avds | tr -d '\r' | grep -Fx -- "$avd" >/dev/null || {
   echo "AVD '$avd' does not exist. Create it in Android Studio Device Manager." >&2
   exit 1
