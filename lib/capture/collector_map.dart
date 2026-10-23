@@ -96,7 +96,9 @@ class _CollectorMapState extends State<CollectorMap> {
                     minHeight: 48,
                   ),
                   tooltip: 'Обновить местоположение',
-                  onPressed: c.mapLoading ? null : c.refreshMapLocation,
+                  onPressed: c.mapLoading
+                      ? null
+                      : () => c.refreshMapLocation(requestPermission: true),
                   icon: const Icon(Icons.my_location),
                 ),
               ),
@@ -155,7 +157,8 @@ class MapLocationNotice extends StatelessWidget {
               Wrap(
                 children: [
                   TextButton(
-                    onPressed: controller.refreshMapLocation,
+                    onPressed: () =>
+                        controller.refreshMapLocation(requestPermission: true),
                     child: const Text('Повторить GPS'),
                   ),
                   TextButton(

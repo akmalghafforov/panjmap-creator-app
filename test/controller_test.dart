@@ -27,6 +27,8 @@ class MemoryStore implements DraftStore {
 
 class Device implements CaptureDevice {
   @override
+  Future<void> prepareLocation({bool request = true}) async {}
+  @override
   Future<XFile?> photo({bool recover = false}) async => null;
   @override
   Future<Position> position() async => throw TimeoutException('GPS');
@@ -91,9 +93,10 @@ void main() {
     await c.save({
       'fix': {'latitude': 1},
     });
+    c.authenticated = true;
     await c.run(c.locate);
     expect(c.draft!['fix']['latitude'], 1);
-    expect(c.error, isNotNull);
+    expect(c.gpsError, isNotNull);
   });
   test('Failed atomic save preserves in-memory draft', () async {
     await c.save({'file': 'previous'});
@@ -129,7 +132,7 @@ void main() {
     });
     await c.submit();
     expect(c.frozen, false);
-    expect(c.error, contains('двух минут'));
+    expect(c.gpsError, isNotNull);
   });
   test('Original account required for frozen draft', () async {
     c.authenticated = true;
@@ -155,6 +158,7 @@ void main() {
       final draft = controller.draft;
       final first = controller.refreshMapLocation();
       final second = controller.refreshMapLocation();
+      await Future<void>.delayed(Duration.zero);
       expect(device.calls, 1);
       expect(controller.busy, false);
       device.gate.complete(mapFix());

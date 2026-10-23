@@ -123,6 +123,10 @@ class CaptureController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    ++sessionGeneration;
+    ++_lookupGeneration;
+    ++_captureGeneration;
     ++_authRequest;
     ++_optionsRequest;
     _expiryTimer?.cancel();
@@ -179,6 +183,17 @@ class CaptureController extends ChangeNotifier {
     return fieldErrors.isEmpty;
   }
 
+  bool _disposed = false;
+  int _captureGeneration = 0;
+  int photoRevision = 0;
+  bool gpsPending = false;
+  String? gpsError;
+  bool recoveredPhoto = false;
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
   bool busy = false;
   bool _authenticated = false;
   int sessionGeneration = 0;
@@ -187,6 +202,8 @@ class CaptureController extends ChangeNotifier {
     if (_authenticated == value) return;
     _authenticated = value;
     sessionGeneration++;
+    ++_captureGeneration;
+    gpsPending = false;
     _lookupGeneration++;
     suggestions = null;
     suggestionError = null;
@@ -252,15 +269,20 @@ class CaptureController extends ChangeNotifier {
   int mapRevision = 0;
   Future<void>? _mapRequest;
 
-  Future<void> refreshMapLocation() {
+  Future<void> refreshMapLocation({bool requestPermission = false}) {
     if (!authenticated || !collectionAvailable) return Future.value();
-    return _mapRequest ??= _refreshMapLocation(sessionGeneration);
+    return _mapRequest ??= _refreshMapLocation(
+      sessionGeneration,
+      requestPermission,
+    );
   }
 
-  Future<void> _refreshMapLocation(int session) async {
+  Future<void> _refreshMapLocation(int session, bool requestPermission) async {
     mapLoading = true;
     notifyListeners();
     try {
+      await device.prepareLocation(request: requestPermission);
+      if (_disposed || session != sessionGeneration || !authenticated) return;
       final position = await device.position();
       if (session != sessionGeneration || !authenticated) return;
       mapPosition = position;
@@ -520,6 +542,9 @@ class CaptureController extends ChangeNotifier {
   }
 
   String message(Object e) {
+    if (e is TimeoutException) {
+      return 'Не удалось получить GPS за 30 секунд. Повторите GPS.';
+    }
     if (e is DioException) {
       if (e.response?.statusCode == 401) {
         if (authenticated || api.dio.options.headers['Authorization'] != null) {
@@ -538,7 +563,9 @@ class CaptureController extends ChangeNotifier {
       };
     }
     if (e is PlatformException) {
-      return 'Камера недоступна или доступ запрещён. Разрешите камеру в настройках и повторите.';
+      return e.code.contains('access_denied') || e.code.contains('permission')
+          ? 'Доступ к камере запрещён. Разрешите камеру в настройках приложения и повторите.'
+          : 'Камера недоступна. Проверьте наличие приложения камеры и повторите.';
     }
     return e.toString();
   }
@@ -636,7 +663,13 @@ class CaptureController extends ChangeNotifier {
     if (!canCollect) return;
     unawaited(refreshMapLocation());
     unawaited(refreshRecentObjects());
-    if (!frozen) await suggest();
+    if (recoveredPhoto && !frozen) {
+      recoveredPhoto = false;
+      photoRevision++;
+      unawaited(locate());
+    } else if (!frozen) {
+      await suggest();
+    }
   }
 
   Future<void> normalizeDraft() async {
@@ -678,10 +711,38 @@ class CaptureController extends ChangeNotifier {
       return;
     }
     final session = sessionGeneration;
+    final attempt = ++_captureGeneration;
+    gpsPending = false;
+    bool current() =>
+        !_disposed &&
+        attempt == _captureGeneration &&
+        session == sessionGeneration &&
+        !frozen;
+    Future<Position?>? gps;
+    Object? gpsFailure;
+    if (!recover) {
+      try {
+        await device.prepareLocation();
+      } catch (e) {
+        gpsFailure = e;
+      }
+      if (!current()) return;
+      if (gpsFailure == null) {
+        gps = device.position().then<Position?>(
+          (p) => p,
+          onError: (Object e) {
+            gpsFailure = e;
+            return null;
+          },
+        );
+      }
+    }
     final photo = await device.photo(recover: recover);
     if (photo == null) {
+      if (current() && !recover) status = 'Съёмка отменена';
       return;
     }
+    if (!current()) return;
     final bytes = await photo.readAsBytes();
     final format = img.findDecoderForData(bytes);
     final decoded = format?.startDecode(bytes);
@@ -701,12 +762,12 @@ class CaptureController extends ChangeNotifier {
     if (format!.decodeFrame(0) == null) {
       throw StateError('Повреждённое фото. Повторите съёмку.');
     }
-    if (session != sessionGeneration || frozen) return;
+    if (!current()) return;
     final dir = await getApplicationSupportDirectory();
     final f = File('${dir.path}/${const Uuid().v4()}.capture');
     await f.writeAsBytes(bytes, flush: true);
     try {
-      if (session != sessionGeneration || frozen) {
+      if (!current()) {
         await f.delete();
         return;
       }
@@ -736,53 +797,77 @@ class CaptureController extends ChangeNotifier {
     fieldErrors.remove('gps');
     notifyListeners();
     if (recover) {
-      status = 'Фото восстановлено. После входа нажмите «Получить свежие координаты».';
-      notifyListeners();
+      recoveredPhoto = true;
+      status = 'Фото восстановлено. Войдите для получения GPS.';
       return;
     }
-    if (session != sessionGeneration || !authenticated) return;
-    await locate();
-  }
-
-  Future<void> locate() async {
-    if (frozen) {
-      return;
-    }
-    final generation = ++_lookupGeneration;
-    final session = sessionGeneration;
+    photoRevision++;
+    gpsPending = true;
+    gpsError = null;
     status = 'Получение координат…';
     notifyListeners();
-    late Position p;
-    late bool approximate;
-    try {
-      p = await device.position();
-      if (generation != _lookupGeneration || frozen || !authenticated) return;
-      approximate = await device.approximate();
-    } catch (_) {
-      if (session != sessionGeneration || generation != _lookupGeneration) {
-        return;
+    unawaited(() async {
+      try {
+        final position = await gps;
+        if (!current()) return;
+        if (position == null) throw gpsFailure ?? StateError('GPS недоступен');
+        await _applyPosition(position, current);
+      } catch (e) {
+        if (current()) gpsError = message(e);
+      } finally {
+        if (current()) {
+          gpsPending = false;
+          status = '';
+          notifyListeners();
+        }
       }
-      status = '';
-      throw StateError(
-        'Не удалось получить координаты. Проверьте разрешение и геолокацию, затем нажмите «Получить свежие координаты».',
-      );
-    }
-    if (session == sessionGeneration && authenticated) {
-      mapPosition = p;
-      mapMessage = null;
-      mapRevision++;
-      notifyListeners();
-    }
-    if (generation != _lookupGeneration || frozen || !authenticated) return;
+    }());
+  }
+
+  Future<void> _applyPosition(Position p, bool Function() current) async {
+    final approximate = await device.approximate();
+    if (!current()) return;
+    mapPosition = p;
+    mapMessage = null;
+    mapRevision++;
     await save({
       ...?draft,
       'fix': GpsFix(p.latitude, p.longitude, p.accuracy, p.timestamp).toJson(),
       'approximate': approximate,
       'addressChoices': manualChoices(),
     });
-    status = '';
+    if (!current()) return;
     fieldErrors.remove('gps');
     await suggest();
+  }
+
+  Future<void> locate() async {
+    if (frozen || gpsPending || !authenticated) return;
+    final attempt = ++_captureGeneration;
+    final session = sessionGeneration;
+    bool current() =>
+        !_disposed &&
+        attempt == _captureGeneration &&
+        session == sessionGeneration &&
+        authenticated &&
+        !frozen;
+    gpsPending = true;
+    gpsError = null;
+    status = 'Получение координат…';
+    notifyListeners();
+    try {
+      await device.prepareLocation();
+      final p = await device.position();
+      if (current()) await _applyPosition(p, current);
+    } catch (e) {
+      if (current()) gpsError = message(e);
+    } finally {
+      if (current()) {
+        gpsPending = false;
+        status = '';
+        notifyListeners();
+      }
+    }
   }
 
   void _requireSession(int session) {
@@ -800,6 +885,7 @@ class CaptureController extends ChangeNotifier {
     if (!authenticated || !collectionAvailable) {
       throw StateError('Войдите в систему.');
     }
+    if (gpsPending) throw StateError('Дождитесь получения координат.');
     await normalizeDraft();
     if (!frozen) {
       if (!validateFields()) throw StateError('Заполните обязательные поля.');
@@ -812,7 +898,10 @@ class CaptureController extends ChangeNotifier {
               .difference(DateTime.parse(fix['fix_time'] as String))
               .inSeconds >
           120) {
-        throw StateError('Обновите координаты: прошло более двух минут.');
+        await locate();
+        if (gpsError != null) return;
+        status = 'Координаты обновлены. Проверьте адрес и отправьте снова.';
+        return;
       }
       final photoBytes = await File(draft!['file'] as String).readAsBytes();
       final info = img.findDecoderForData(photoBytes)?.startDecode(photoBytes);
@@ -1008,6 +1097,7 @@ class CaptureController extends ChangeNotifier {
     _lookupGeneration++;
     suggestions = null;
     status = '';
+    ++_captureGeneration;
     final f = File(path);
     if (await f.exists()) {
       await f.delete();

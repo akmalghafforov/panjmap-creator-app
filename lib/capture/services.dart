@@ -44,6 +44,7 @@ class FileDraftStore implements DraftStore {
 
 abstract class CaptureDevice {
   Future<XFile?> photo({bool recover = false});
+  Future<void> prepareLocation({bool request = true});
   Future<Position> position();
   Future<bool> approximate();
 }
@@ -67,18 +68,28 @@ class AndroidCapture implements CaptureDevice {
     );
   }
 
+  Future<void>? _permission;
   @override
-  Future<Position> position() async {
-    if (!await Geolocator.isLocationServiceEnabled()) {
-      throw StateError('Включите геолокацию в настройках.');
-    }
+  Future<void> prepareLocation({bool request = true}) {
+    return _permission ??= _prepareLocation(request)
+        .whenComplete(() => _permission = null);
+  }
+
+  Future<void> _prepareLocation(bool request) async {
     var p = await Geolocator.checkPermission();
-    if (p == LocationPermission.denied) {
+    if (request && p == LocationPermission.denied) {
       p = await Geolocator.requestPermission();
     }
     if (p == LocationPermission.denied ||
         p == LocationPermission.deniedForever) {
       throw StateError('Разрешите геолокацию в настройках приложения.');
+    }
+  }
+
+  @override
+  Future<Position> position() async {
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      throw StateError('Включите геолокацию в настройках.');
     }
     return Geolocator.getCurrentPosition(
       locationSettings: const LocationSettings(

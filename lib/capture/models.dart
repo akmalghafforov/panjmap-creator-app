@@ -1,14 +1,18 @@
 const capturePlaceTypes = {
-  'apartment_building': 'Многоэтажный жилой дом',
   'private_house': 'Дом',
-  'bazaar': 'Базар',
+  'apartment_building': 'Этаж',
   'shop': 'Магазин',
   'pharmacy': 'Аптека',
-  'clinic': 'Клиника',
   'other': 'Другое',
 };
 const placeLabels = {
-  ...capturePlaceTypes,
+  'private_house': 'Дом',
+  'shop': 'Магазин',
+  'pharmacy': 'Аптека',
+  'other': 'Другое',
+  'apartment_building': 'Многоэтажный жилой дом',
+  'bazaar': 'Базар',
+  'clinic': 'Клиника',
   'residential_compound': 'Жилой комплекс',
   'building': 'Здание',
 };
