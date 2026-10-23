@@ -21,7 +21,11 @@ class CaptureController extends ChangeNotifier {
   final CaptureApi api;
   final DraftStore store;
   final CaptureDevice device;
-  CaptureController(this.api, this.store, this.device) {
+  DraftStore editStore;
+  Map<String, dynamic>? pendingEdit;
+  bool captureSaving = false;
+  CaptureController(this.api, this.store, this.device, {DraftStore? editStore})
+    : editStore = editStore ?? FileDraftStore(name: 'capture-edit.json') {
     api.dio.interceptors.add(
       InterceptorsWrapper(
         onError: (e, handler) {
@@ -207,6 +211,8 @@ class CaptureController extends ChangeNotifier {
     _lookupGeneration++;
     suggestions = null;
     suggestionError = null;
+    thumbnailBytes.clear();
+    _thumbnailRequests.clear();
     recentObjects = [];
     recentError = null;
     recentLoading = false;
@@ -220,6 +226,7 @@ class CaptureController extends ChangeNotifier {
 
   List<Map<String, dynamic>> recentObjects = [];
   bool recentLoading = false;
+  int recentRevision = 0;
   String? recentError;
   Future<void>? _recentRequest;
 
@@ -244,6 +251,7 @@ class CaptureController extends ChangeNotifier {
       final rows =
           await Future.sync(() => api.get('places/recent?limit=20')) as List;
       if (session != sessionGeneration || !authenticated) return;
+      recentRevision++;
       recentObjects = rows
           .map((r) => Map<String, dynamic>.from(r as Map))
           .toList();
@@ -259,6 +267,146 @@ class CaptureController extends ChangeNotifier {
         recentLoading = false;
         _recentRequest = null;
       }
+      notifyListeners();
+    }
+  }
+
+  final thumbnailBytes = <String, Uint8List>{};
+  final _thumbnailRequests = <String, Future<Uint8List?>>{};
+  String thumbnailKey(Map photo) =>
+      '${photo['id']}:${photo['derivative_version']}';
+  Future<Uint8List?> loadThumbnail(Map photo) {
+    if (!authenticated || photo['processing_state'] != 'processed') {
+      return Future.value();
+    }
+    final key = thumbnailKey(photo);
+    if (thumbnailBytes.containsKey(key)) {
+      return Future.value(thumbnailBytes[key]);
+    }
+    return _thumbnailRequests[key] ??= _loadThumbnail(
+      photo,
+      key,
+      sessionGeneration,
+    );
+  }
+
+  Future<Uint8List?> _loadThumbnail(Map photo, String key, int session) async {
+    try {
+      final bytes = Uint8List.fromList(await api.thumbnail('${photo['id']}'));
+      if (!authenticated || session != sessionGeneration) return null;
+      thumbnailBytes[key] = bytes;
+      return bytes;
+    } catch (_) {
+      return null;
+    } finally {
+      if (session == sessionGeneration) _thumbnailRequests.remove(key);
+    }
+  }
+
+  bool captureEditable(Map row) =>
+      authenticated &&
+      collectionAvailable &&
+      row['editable'] == true &&
+      !(draft?['place']?['id'] == row['id'] && !complete);
+
+  bool get ownPendingEdit =>
+      pendingEdit != null &&
+      pendingEdit!['account'] == account &&
+      pendingEdit!['origin'] == api.origin;
+
+  Future<void> discardCaptureEdit() async {
+    await editStore.clear();
+    pendingEdit = null;
+    notifyListeners();
+  }
+
+  /// Persist the exact command before sending; retries never change its UUID or body.
+  Future<void> saveCapture(
+    Map<String, dynamic> row,
+    Map<String, dynamic> command,
+    Map<String, dynamic> values,
+  ) async {
+    if (captureSaving) return;
+    if (!authenticated || !captureEditable(row)) {
+      throw StateError('Запись недоступна для редактирования.');
+    }
+    if (pendingEdit != null &&
+        (!ownPendingEdit || pendingEdit!['id'] != row['id'])) {
+      throw StateError(
+        'Сначала завершите сохранённое редактирование с исходной учётной записью.',
+      );
+    }
+    captureSaving = true;
+    final session = sessionGeneration;
+    notifyListeners();
+    try {
+      final retry = pendingEdit != null;
+      final pending =
+          pendingEdit ??
+          <String, dynamic>{
+            'id': row['id'],
+            'account': account,
+            'origin': api.origin,
+            'key': const Uuid().v4(),
+            'command': command,
+            'row': row,
+            'values': values,
+          };
+      await editStore.write(pending);
+      pendingEdit = pending;
+      final body = Map<String, dynamic>.from(pending['command'] as Map);
+      _requireSession(session);
+      if (retry) {
+        final current = Map<String, dynamic>.from(
+          await api.get('places/${row['id']}') as Map,
+        );
+        _requireSession(session);
+        final place = body['place'] as Map;
+        Map? entrance;
+        final editEntrance = body['entrance'] as Map?;
+        if (editEntrance != null) {
+          entrance = await api.get('entrances/${editEntrance['id']}') as Map;
+        }
+        _requireSession(session);
+        bool applied(Map actual, Map expected) =>
+            actual['revision'] == (expected['base_revision'] as num) + 1 &&
+            expected.entries
+                .where((e) => e.key != 'base_revision' && e.key != 'id')
+                .every((e) => _deepEqual(actual[e.key], e.value));
+        if (applied(current, place) &&
+            (editEntrance == null || applied(entrance!, editEntrance))) {
+          await discardCaptureEdit();
+          if (session == sessionGeneration) {
+            await _refreshRecentAfterCreation(session);
+          }
+          return;
+        }
+        if (current['revision'] != place['base_revision'] ||
+            (editEntrance != null &&
+                entrance!['revision'] != editEntrance['base_revision'])) {
+          throw StateError(
+            'Конфликт версий. Изменения сохранены. Загрузите текущие данные.',
+          );
+        }
+      }
+      if (!authenticated || session != sessionGeneration) {
+        throw StateError('Войдите снова; изменения сохранены.');
+      }
+      await api.patchCapture('${row['id']}', body, pending['key'] as String);
+      _requireSession(session);
+      await discardCaptureEdit();
+      if (session == sessionGeneration) {
+        await _refreshRecentAfterCreation(session);
+      }
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 409) {
+        throw StateError(
+          'Конфликт версий. Изменения сохранены. Загрузите текущие данные.',
+        );
+      }
+      throw StateError(message(e));
+    } finally {
+      captureSaving = false;
       notifyListeners();
     }
   }
@@ -573,6 +721,7 @@ class CaptureController extends ChangeNotifier {
   Future<void> initialize() => run(() async {
     unawaited(loadAuthOptions());
     draft = await store.read();
+    pendingEdit = await editStore.read();
     await normalizeDraft();
     type = draft?['type'] as String?;
     if (!frozen) {

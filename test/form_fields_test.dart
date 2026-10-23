@@ -55,7 +55,12 @@ void main() {
         if (type == 'apartment_building') {
           expect(c.draft!['entrance']['label'], '2Б');
         }
-        final restored = CaptureController(api, store, Device());
+        final restored = CaptureController(
+          api,
+          store,
+          Device(),
+          editStore: MemoryStore(),
+        );
         await restored.initialize();
         expect(restored.type, type);
         expect(restored.houseNumber, ' 12А ');

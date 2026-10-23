@@ -94,7 +94,12 @@ void main() {
     'discovery replaces password fields and administrator can switch roles',
     (tester) async {
       final api = AuthApi();
-      final c = CaptureController(api, MemoryStore(), Device());
+      final c = CaptureController(
+        api,
+        MemoryStore(),
+        Device(),
+        editStore: MemoryStore(),
+      );
       addTearDown(c.dispose);
       await tester.pumpWidget(MaterialApp(home: CaptureScreen(controller: c)));
       await tester.pumpAndSettle();
@@ -129,7 +134,12 @@ void main() {
     'discovery failure retains passwords and retry discovers empty setup',
     (tester) async {
       final api = AuthApi()..options = StateError('offline');
-      final c = CaptureController(api, MemoryStore(), Device());
+      final c = CaptureController(
+        api,
+        MemoryStore(),
+        Device(),
+        editStore: MemoryStore(),
+      );
       addTearDown(c.dispose);
       await tester.pumpWidget(MaterialApp(home: CaptureScreen(controller: c)));
       await tester.pumpAndSettle();
@@ -146,7 +156,12 @@ void main() {
 
   test('disabled and 404 discovery use password fallback', () async {
     final api = AuthApi();
-    final c = CaptureController(api, MemoryStore(), Device());
+    final c = CaptureController(
+      api,
+      MemoryStore(),
+      Device(),
+      editStore: MemoryStore(),
+    );
     addTearDown(c.dispose);
     api.options = {'development_role_login_enabled': false, 'roles': []};
     await c.loadAuthOptions();
@@ -162,8 +177,12 @@ void main() {
 
   test('repeated taps issue one request and store expiry metadata', () async {
     final api = AuthApi()..loginGate = Completer();
-    final c = CaptureController(api, MemoryStore(), Device())
-      ..selectedRole = 'administrator';
+    final c = CaptureController(
+      api,
+      MemoryStore(),
+      Device(),
+      editStore: MemoryStore(),
+    )..selectedRole = 'administrator';
     addTearDown(c.dispose);
     final first = c.loginRole();
     await c.loginRole();
@@ -188,7 +207,7 @@ void main() {
         'account': 'admin-id',
         'file': 'photo-path',
       };
-    final c = CaptureController(api, store, Device());
+    final c = CaptureController(api, store, Device(), editStore: MemoryStore());
     addTearDown(c.dispose);
     await c.initialize();
     expect(c.authenticated, true);
@@ -211,7 +230,12 @@ void main() {
     FlutterSecureStorage.setMockInitialValues({
       api.origin: jsonEncode(api.credentials),
     });
-    final c = CaptureController(api, MemoryStore(), Device());
+    final c = CaptureController(
+      api,
+      MemoryStore(),
+      Device(),
+      editStore: MemoryStore(),
+    );
     addTearDown(c.dispose);
     await c.initialize();
     expect(c.authenticated, false);
@@ -221,7 +245,12 @@ void main() {
 
   test('stale options and me cannot replace newer sign-in state', () async {
     final api = AuthApi()..optionsGate = Completer();
-    final c = CaptureController(api, MemoryStore(), Device());
+    final c = CaptureController(
+      api,
+      MemoryStore(),
+      Device(),
+      editStore: MemoryStore(),
+    );
     addTearDown(c.dispose);
     final options = c.loadAuthOptions();
     await c.loginRole();
@@ -242,7 +271,12 @@ void main() {
 
   test('late sign-in response cannot restore ended session', () async {
     final api = AuthApi()..loginGate = Completer();
-    final c = CaptureController(api, MemoryStore(), Device());
+    final c = CaptureController(
+      api,
+      MemoryStore(),
+      Device(),
+      editStore: MemoryStore(),
+    );
     addTearDown(c.dispose);
     final login = c.loginRole();
     await c.endSession();
@@ -254,7 +288,12 @@ void main() {
   test('foreground expiry timer ends the session', () async {
     final api = AuthApi()
       ..expiry = DateTime.now().add(const Duration(milliseconds: 150));
-    final c = CaptureController(api, MemoryStore(), Device());
+    final c = CaptureController(
+      api,
+      MemoryStore(),
+      Device(),
+      editStore: MemoryStore(),
+    );
     addTearDown(c.dispose);
     await c.loginRole();
     expect(c.authenticated, true);
@@ -267,7 +306,12 @@ void main() {
     tester,
   ) async {
     final api = AuthApi();
-    final c = CaptureController(api, MemoryStore(), Device());
+    final c = CaptureController(
+      api,
+      MemoryStore(),
+      Device(),
+      editStore: MemoryStore(),
+    );
     addTearDown(c.dispose);
     await tester.pumpWidget(MaterialApp(home: CaptureScreen(controller: c)));
     await tester.pumpAndSettle();
@@ -284,7 +328,12 @@ void main() {
 
   test('stale discovery cannot overwrite a more recent discovery', () async {
     final api = AuthApi()..optionsGate = Completer();
-    final c = CaptureController(api, MemoryStore(), Device());
+    final c = CaptureController(
+      api,
+      MemoryStore(),
+      Device(),
+      editStore: MemoryStore(),
+    );
     addTearDown(c.dispose);
     final gate = api.optionsGate!;
     final first = c.loadAuthOptions();
@@ -299,7 +348,12 @@ void main() {
 
   test('late sign-in failure cannot overwrite an ended session', () async {
     final api = AuthApi()..loginGate = Completer();
-    final c = CaptureController(api, MemoryStore(), Device());
+    final c = CaptureController(
+      api,
+      MemoryStore(),
+      Device(),
+      editStore: MemoryStore(),
+    );
     addTearDown(c.dispose);
     final login = c.loginRole();
     await c.endSession();
@@ -320,8 +374,12 @@ void main() {
           client: Dio(BaseOptions(baseUrl: 'https://example.test/api/v1/'))
             ..httpClientAdapter = adapter,
         );
-        final c = CaptureController(api, MemoryStore(), Device())
-          ..authenticated = true;
+        final c = CaptureController(
+          api,
+          MemoryStore(),
+          Device(),
+          editStore: MemoryStore(),
+        )..authenticated = true;
         addTearDown(c.dispose);
         api.token('old');
         await secureTokens.write(key: api.origin, value: 'old');

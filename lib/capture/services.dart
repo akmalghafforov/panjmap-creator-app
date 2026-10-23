@@ -14,8 +14,10 @@ abstract class DraftStore {
 }
 
 class FileDraftStore implements DraftStore {
+  final String name;
+  FileDraftStore({this.name = 'draft.json'});
   Future<File> get file async =>
-      File('${(await getApplicationSupportDirectory()).path}/draft.json');
+      File('${(await getApplicationSupportDirectory()).path}/$name');
   @override
   Future<Map<String, dynamic>?> read() async {
     final f = await file;
@@ -126,6 +128,24 @@ class CaptureApi {
       (await dio.get<dynamic>(path)).data['data'];
   Future<Map<String, dynamic>> getPage(String path) async =>
       Map<String, dynamic>.from((await dio.get<dynamic>(path)).data as Map);
+
+  Future<List<int>> thumbnail(String id) async => (await dio.get<List<int>>(
+    'photos/$id/content?variant=thumbnail',
+    options: Options(responseType: ResponseType.bytes),
+  )).data!;
+
+  Future<Map<String, dynamic>> patchCapture(
+    String id,
+    Map<String, dynamic> command,
+    String key,
+  ) async => Map<String, dynamic>.from(
+    (await dio.patch<dynamic>(
+          'places/$id/capture',
+          data: command,
+          options: Options(headers: {'Idempotency-Key': key}),
+        )).data['data']
+        as Map,
+  );
 
   Future<Map<String, dynamic>> post(
     String path,

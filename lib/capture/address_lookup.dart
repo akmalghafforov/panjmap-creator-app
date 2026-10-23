@@ -10,7 +10,8 @@ class AddressLookup extends ChangeNotifier {
   final CaptureController controller;
   final String kind;
   late final int session = controller.sessionGeneration;
-  AddressLookup(this.controller, this.kind) {
+  final Map? savedFix;
+  AddressLookup(this.controller, this.kind, {this.savedFix}) {
     controller.addListener(_controllerChanged);
     _readFix();
     unawaited(load(reset: true));
@@ -41,7 +42,7 @@ class AddressLookup extends ChangeNotifier {
       : List.unmodifiable(_rows);
 
   bool _readFix() {
-    final fix = controller.draft?['fix'] as Map?;
+    final fix = savedFix ?? controller.draft?['fix'] as Map?;
     final lat = fix?['latitude'], lon = fix?['longitude'];
     final latitude = lat is num && lat.isFinite && lat.abs() <= 90
         ? lat.toDouble()

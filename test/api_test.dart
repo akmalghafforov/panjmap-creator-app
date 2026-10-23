@@ -58,6 +58,26 @@ void main() {
       expect(await api.get('geography/mahallas'), isEmpty);
     },
   );
+  test('capture PATCH and thumbnails use authenticated endpoints', () async {
+    final adapter = Adapter();
+    final dio = Dio(BaseOptions(baseUrl: 'https://example.test/api/v1/'))
+      ..httpClientAdapter = adapter;
+    final api = CaptureApi('https://example.test/api/v1', client: dio)
+      ..token('secret');
+    final command = {
+      'place': {'base_revision': 2, 'house_number': '12'},
+    };
+    await api.patchCapture('p', command, 'stable-key');
+    expect(adapter.requests.last.method, 'PATCH');
+    expect(adapter.requests.last.uri.path, '/api/v1/places/p/capture');
+    expect(adapter.requests.last.headers['Idempotency-Key'], 'stable-key');
+    expect(jsonDecode(adapter.bodies.last), command);
+    await api.thumbnail('f');
+    expect(adapter.requests.last.uri.path, '/api/v1/photos/f/content');
+    expect(adapter.requests.last.uri.queryParameters, {'variant': 'thumbnail'});
+    expect(adapter.requests.last.headers['Authorization'], 'Bearer secret');
+    expect(adapter.requests.last.responseType, ResponseType.bytes);
+  });
   test(
     'Contract paths, bearer, JSON and multipart retry keys remain stable',
     () async {

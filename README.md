@@ -1,6 +1,6 @@
 # Panjmap Android capture
 
-Russian field capture MVP: sign in, tap + to photograph an entrance while foreground GPS runs, choose a building type, review the address and submit. Android API 24+. New places only; one recoverable draft. Includes a display-only map and recent server-created objects; no citizen records, background location or background synchronization.
+Russian field capture MVP: sign in, tap + to photograph an entrance while foreground GPS runs, choose a building type, review the address and submit. Android API 24+. New places and corrections to own unconfirmed captures; one recoverable creation draft. Includes a display-only map and recent server-created objects; no citizen records, background location or background synchronization.
 
 ## Prerequisites and run
 
@@ -110,7 +110,7 @@ flutter_map (без предзагрузки и массового скачив�
 Кнопка добавления находится внутри карты, в 16 px от нижнего правого угла; атрибуция остаётся видимой.
 Нижняя половина прокручивается отдельно: последние 20 объектов текущего пользователя,
 название (или тип), доступный адрес и время создания в часовом поясе устройства.
-Список доступен при ошибках GPS и тайлов. Строки доступны только для чтения.
+Список доступен при ошибках GPS и тайлов. Собственные неподтверждённые объекты можно редактировать.
 
 История загружается с сервера после входа/восстановления сессии, при возврате из формы,
 после подтверждения создания объекта (включая восстановление по UUID) и по кнопке обновления.
@@ -120,7 +120,7 @@ flutter_map (без предзагрузки и массового скачив�
 
 Сначала разверните companion backend с `GET /api/v1/places/recent?limit=20`, затем приложение.
 Endpoint возвращает существующие place resources в `data`, только созданные текущим
-пользователем в доступных назначенных участках, по `created_at DESC, id DESC`.
+пользователем, по `created_at DESC, id DESC`.
 `limit`: 1–100, по умолчанию 20; без пагинации и новых миграций.
 
 Legacy drafts lose obsolete area metadata before use. If normalization changes a frozen place payload, its replacement idempotency key is saved before network activity. Record UUIDs are retained and reconciled before writes.
@@ -136,3 +136,15 @@ Development administrators see a role-switch screen because their account cannot
 Улицы ищутся на сервере с `q` через 300 мс после ввода; следующие страницы загружаются при прокрутке. Улицы не фильтруются по махалле. Пагинация читает `meta.page` и `meta.last_page`, с поддержкой `meta.current_page`. Списки показывают загрузку, пустой результат и ошибку с повтором. Ответы устаревшего поиска, закрытой формы или предыдущей сессии игнорируются. Стрелки и Enter выбирают результат, Escape или нажатие вне списка закрывает поиск.
 
 Form update verification (2026-10-23): `flutter analyze` reports no issues; all 101 Flutter tests pass, including complete-page distance ordering, polygon edges/holes, GPS changes, lookup loading/retry/debounce/session handling, normal/enlarged control sizing, keyboard interaction, and frozen legacy-type recovery. Narrow-screen and keyboard layout checks are automated widget tests; physical-device checks remain as listed above.
+
+### Recent cards and editing
+
+Deploy the companion backend's additive recent-object response and `PATCH /places/{id}/capture` before updating the app. This change needs no migration or dependency. Cards show building type, mahalla, street, address number, apartment entrance number, local creation time and a 72×72 thumbnail. Missing details use explicit placeholders. Confirmed and retired objects remain visible as read-only; older responses retain available address details. The map/list split and independent list scrolling are unchanged.
+
+`Редактировать` opens a separate form in the same field order as creation. It prefills saved address values and uses the latest active entrance's saved coordinates for mahalla ordering. The five capture types are available; historical types and legacy address values can remain unchanged. `Этаж` requires an entrance number; changing away clears that entrance label. Photo and GPS remain unchanged. An unfinished local creation prevents editing its corresponding object. Closing a changed form requires confirmation; the creation draft stays separate.
+
+Before sending, the exact save command, base revisions, account, API origin and UUID idempotency key are written to `capture-edit.json`. `Продолжить сохранённое редактирование` restores a pending save after restart. Retries reconcile revisions and submitted values, including after reauthentication with the original account. Conflicts preserve edits and offer `Загрузить текущие данные`, which requires confirmation before replacing the edited values. Saving refreshes recent objects while preserving server creation-time ordering.
+
+Thumbnails use the authenticated photo-content endpoint with `variant=thumbnail`. Missing, processing and failed images have placeholders; originals are never fetched as a fallback. Bytes are held only in session memory, cleared on session change, and stale responses are discarded. Photos are display-only: replacing photos, changing GPS and requesting corrections to confirmed records are outside this editor.
+
+Verification (2026-10-23, recent cards/editor): `flutter analyze` reports no issues; all 114 Flutter tests pass. Companion backend: 81 tests and 1,042 assertions pass; OpenAPI schema/reference validation passes. Coverage includes lost-response/restart reconciliation, session isolation, pending-edit reload, atomic revision/ownership checks, deterministic latest entrance/photo selection, keyboard selection, and narrow screens with doubled text and keyboard insets. No device smoke test or deployment was performed for this change.

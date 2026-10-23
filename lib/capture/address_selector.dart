@@ -11,6 +11,9 @@ import 'form_control.dart';
 class AddressSelector extends StatefulWidget {
   final CaptureController controller;
   final String kind, label;
+  final String? selectedName, error;
+  final Map? savedFix;
+  final bool enabled;
   final Future<void> Function(Map<String, dynamic>) onSelected;
   const AddressSelector({
     super.key,
@@ -18,6 +21,10 @@ class AddressSelector extends StatefulWidget {
     required this.kind,
     required this.label,
     required this.onSelected,
+    this.selectedName,
+    this.savedFix,
+    this.error,
+    this.enabled = true,
   });
 
   @override
@@ -37,6 +44,7 @@ class _AddressSelectorState extends State<AddressSelector> {
   int highlighted = -1;
   String get choiceKey => widget.kind == 'mahallas' ? 'mahalla' : 'street';
   String get committed =>
+      widget.selectedName ??
       (widget.controller.draft?['addressChoices'] as Map?)?[choiceKey]?['name']
           as String? ??
       '';
@@ -44,8 +52,11 @@ class _AddressSelectorState extends State<AddressSelector> {
   @override
   void initState() {
     super.initState();
-    lookup = AddressLookup(widget.controller, widget.kind)
-      ..addListener(changed);
+    lookup = AddressLookup(
+      widget.controller,
+      widget.kind,
+      savedFix: widget.savedFix,
+    )..addListener(changed);
     restoreLabel();
     focus.addListener(focusChanged);
     scroll.addListener(() {
@@ -53,6 +64,16 @@ class _AddressSelectorState extends State<AddressSelector> {
         lookup.loadMore();
       }
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant AddressSelector oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.enabled) {
+      dismiss();
+      focus.unfocus();
+    }
+    if (!searching) restoreLabel();
   }
 
   void restoreLabel() {
@@ -92,7 +113,12 @@ class _AddressSelectorState extends State<AddressSelector> {
   }
 
   void open() {
-    if (searching || !lookup.active || widget.controller.busy) return;
+    if (!widget.enabled ||
+        searching ||
+        !lookup.active ||
+        widget.controller.busy) {
+      return;
+    }
     setState(() {
       searching = true;
       highlighted = -1;
@@ -117,7 +143,7 @@ class _AddressSelectorState extends State<AddressSelector> {
   }
 
   Future<void> select(Map<String, dynamic> row) async {
-    if (!lookup.active || widget.controller.busy) return;
+    if (!widget.enabled || !lookup.active || widget.controller.busy) return;
     dismiss();
     focus.unfocus();
     await widget.onSelected(row);
@@ -265,7 +291,9 @@ class _AddressSelectorState extends State<AddressSelector> {
       overlayChildBuilder: dropdown,
       child: FormControl(
         name: choiceKey,
-        error: widget.controller.fieldErrors[choiceKey],
+        error: widget.selectedName != null
+            ? widget.error
+            : widget.controller.fieldErrors[choiceKey],
         child: CompositedTransformTarget(
           link: link,
           child: SizedBox(
@@ -276,7 +304,8 @@ class _AddressSelectorState extends State<AddressSelector> {
                 groupId: group,
                 focusNode: focus,
                 controller: search,
-                enabled: lookup.active && !widget.controller.busy,
+                enabled:
+                    widget.enabled && lookup.active && !widget.controller.busy,
                 decoration: formDecoration(
                   widget.label,
                   suffixIcon: const Icon(Icons.arrow_drop_down),
